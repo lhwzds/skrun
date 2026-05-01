@@ -1,0 +1,45 @@
+name: Publish Python Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: /tmp/skrun-python-target
+  PYTHON_VENV: /tmp/skrun-python-venv
+  WHEEL_DIR: /tmp/skrun-python-dist
+
+jobs:
+  publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    environment: pypi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and test package
+        run: scripts/check.sh ci
+
+      - name: Publish package
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: /tmp/skrun-python-dist
