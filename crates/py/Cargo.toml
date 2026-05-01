@@ -18,7 +18,7 @@ python-module = ["dep:pyo3"]
 anyhow.workspace = true
 engine.workspace = true
 model.workspace = true
-pyo3 = { version = "0.27", optional = true, features = ["extension-module"] }
+pyo3 = { version = "0.28", optional = true, features = ["extension-module"] }
 runtime.workspace = true
 serde_json.workspace = true
 server.workspace = true
