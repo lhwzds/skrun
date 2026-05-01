@@ -1,0 +1,12 @@
+[package]
+name = "regex-finder"
+version = "0.1.2"
+edition = "2024"
+description = "Binary skill that checks whether text matches a regex pattern"
+
+[workspace]
+
+[dependencies]
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

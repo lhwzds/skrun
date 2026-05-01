@@ -1,0 +1,7 @@
+{
+  "action": "match",
+  "input": {
+    "pattern": "\\d+",
+    "text": "abc 123"
+  }
+}

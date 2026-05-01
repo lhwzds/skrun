@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "action": {
+      "type": "string"
+    },
+    "data": {
+      "type": ["object", "array", "null"]
+    },
+    "error": {
+      "type": ["object", "null"]
+    }
+  },
+  "required": ["ok", "action", "data", "error"],
+  "additionalProperties": false
+}

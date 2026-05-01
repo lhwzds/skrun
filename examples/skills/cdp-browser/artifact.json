@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "rust_binary",
+  "id": "cdp-browser",
+  "name": "CDP Browser",
+  "version": "0.1.3",
+  "entry": "bin/release/cdp-browser",
+  "protocol": {
+    "transport": "stdio-json",
+    "input": "single-json-value",
+    "output": "single-json-value"
+  },
+  "schema": {
+    "input": "schema/input.json",
+    "output": "schema/output.json"
+  },
+  "source": {
+    "type": "git",
+    "ref": "lhwzds/skrun/examples/skills/cdp-browser"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["describe", "match"]
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["pattern", "text"],
+      "additionalProperties": false
+    },
+    "pattern": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

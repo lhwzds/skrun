@@ -127,7 +127,17 @@ cargo run -p cli -- \
   skill list --root /tmp/skrun-skills
 ```
 
-Example skills live under `examples/skills`.
+Example skills live under `examples/skills`:
+
+```text
+rust-echo      minimal Rust stdio-json echo skill
+python-echo    minimal uv-backed Python stdio-json echo skill
+regex-finder   Rust binary regex matching skill
+cdp-browser    CDP browser-control binary skill
+```
+
+The richer binary examples show how existing stdin/stdout tools become skrun
+artifacts by adding `artifact.json` and JSON schema files.
 
 ## Agent Framework Examples
 
