@@ -347,16 +347,19 @@ pub fn run_skill(
     input: Value,
     options: &RunOptions,
 ) -> Result<SkillRunOutput> {
-    let root = root.as_ref();
-    let artifact = load_artifact(root)?;
+    let root = root
+        .as_ref()
+        .canonicalize()
+        .with_context(|| format!("resolve {}", root.as_ref().display()))?;
+    let artifact = load_artifact(&root)?;
     let mut command = match artifact.kind {
         ArtifactKind::RustBinary => {
-            let executable = artifact.entry_path(root);
+            let executable = artifact.entry_path(&root);
             if !executable.is_file() {
                 bail!("skill executable not found: {}", executable.display());
             }
             let mut command = Command::new(executable);
-            command.current_dir(root);
+            command.current_dir(&root);
             command
         }
         ArtifactKind::PythonUv => {
@@ -364,10 +367,10 @@ pub fn run_skill(
             command
                 .arg("run")
                 .arg("--project")
-                .arg(root)
+                .arg(&root)
                 .arg("python")
                 .arg(&artifact.entry);
-            command.current_dir(root);
+            command.current_dir(&root);
             command
         }
     };
@@ -803,6 +806,33 @@ mod tests {
         assert_eq!(output.value, serde_json::json!({ "message": "hello" }));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_rust_binary_artifact_accepts_relative_root() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = relative_temp_dir("relative-run-base");
+        let root = base.join("skill");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = SkillArtifact::rust_binary("echo", "Echo", "0.1.0");
+        save_artifact(&root, &artifact).unwrap();
+        let entry = artifact.entry_path(&root);
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, "#!/bin/sh\ncat\n").unwrap();
+        let mut permissions = fs::metadata(&entry).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&entry, permissions).unwrap();
+
+        let output = run_skill(
+            &root,
+            serde_json::json!({ "message": "relative" }),
+            &RunOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(output.value, serde_json::json!({ "message": "relative" }));
+    }
+
     #[test]
     fn install_local_skill_copies_artifact_directory() {
         let source = temp_dir("install-source");
@@ -829,6 +859,17 @@ mod tests {
             .as_nanos();
         let root =
             std::env::temp_dir().join(format!("skrun-runtime-{name}-{}-{now}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn relative_temp_dir(name: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = PathBuf::from("../../target")
+            .join(format!("skrun-runtime-{name}-{}-{now}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         root
     }

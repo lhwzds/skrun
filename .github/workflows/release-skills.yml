@@ -1,0 +1,103 @@
+name: Release Example Skill
+
+on:
+  push:
+    tags:
+      - "*@*"
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: "Example skill id, such as regex-finder or cdp-browser"
+        required: true
+        type: string
+      version:
+        description: "Skill version, such as 0.1.2"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: /tmp/skrun-skill-target
+
+jobs:
+  release:
+    name: Build and publish example skill
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve skill tag
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            skill="${{ inputs.skill }}"
+            version="${{ inputs.version }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            skill="${tag%@*}"
+            version="${tag#*@}"
+          fi
+          case "${skill}" in
+            regex-finder|cdp-browser) ;;
+            *)
+              echo "Unsupported example skill: ${skill}" >&2
+              exit 2
+              ;;
+          esac
+          root="examples/skills/${skill}"
+          test -f "${root}/artifact.json"
+          echo "skill=${skill}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "root=${root}" >> "${GITHUB_OUTPUT}"
+          echo "archive=${skill}@${version}-x86_64-linux.tar.gz" >> "${GITHUB_OUTPUT}"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            /tmp/skrun-skill-target
+          key: ${{ runner.os }}-release-skill-${{ steps.resolve.outputs.skill }}-${{ hashFiles('Cargo.lock', 'crates/skrun/Cargo.toml', 'crates/skrun/src/**', 'examples/skills/**/Cargo.toml', 'examples/skills/**/src/**', 'examples/skills/**/artifact.json') }}
+          restore-keys: |
+            ${{ runner.os }}-release-skill-${{ steps.resolve.outputs.skill }}-
+
+      - name: Build skill binary
+        run: cargo run -p skrun -- skill build --target-dir "${CARGO_TARGET_DIR}" "${{ steps.resolve.outputs.root }}"
+
+      - name: Smoke-test skill
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p skrun -- skill run --input "$(cat "${{ steps.resolve.outputs.root }}/smoke.json")" "${{ steps.resolve.outputs.root }}"
+
+      - name: Package skill
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${{ steps.resolve.outputs.root }}"
+          archive="/tmp/${{ steps.resolve.outputs.archive }}"
+          tar -C "${root}" -czf "${archive}" \
+            artifact.json \
+            SKILL.md \
+            schema \
+            bin
+          echo "archive=${archive}" >> "${GITHUB_ENV}"
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('{0}@{1}', steps.resolve.outputs.skill, steps.resolve.outputs.version) }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ format('{0}@{1}', steps.resolve.outputs.skill, steps.resolve.outputs.version) }}
+          files: ${{ env.archive }}
