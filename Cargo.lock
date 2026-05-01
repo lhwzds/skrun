@@ -370,9 +370,9 @@ dependencies = [
 name = "skrun"
 version = "0.1.0"
 dependencies = [
- "engine",
- "proto",
- "runtime",
+ "anyhow",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

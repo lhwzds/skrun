@@ -9,7 +9,11 @@ description.workspace = true
 [lib]
 name = "skrun"
 
+[[bin]]
+name = "skrun"
+path = "src/main.rs"
+
 [dependencies]
-engine.workspace = true
-proto.workspace = true
-runtime.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true

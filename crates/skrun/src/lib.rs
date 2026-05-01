@@ -1,35 +1,13 @@
-//! # codocia
+//! Public API for the skrun executable skill runtime.
 //!
-//! Restflow is the minimal compatibility facade for the engine boundary.
-//!
-//! ## Owns
-//! - stable engine import shape for examples
-//! - protocol entrypoint re-exports
-//! - executable skill runtime re-exports
-//!
-//! ## Must Not
-//! - own runtime behavior
-//! - own persistence
-//! - duplicate module logic
-//!
-//! ## Inputs
-//! - engine boundary
-//! - protocol types
-//!
-//! ## Outputs
-//! - minimal Rust API surface
-//!
-//! ## Depends On
-//! - engine
-//! - proto
-//!
-//! ## Verify
-//! - cargo check -p skrun
+//! This crate is intentionally self-contained so downstream projects can depend
+//! on `skrun` from crates.io without pulling the internal workspace crates.
 
-pub use engine::{Core, CoreStores};
-pub use proto::{CoreCommand, CoreResponse, CoreSnapshot};
+pub mod runtime;
+
 pub use runtime::{
-    ArtifactKind, ArtifactProtocol, ArtifactSchema, ArtifactSource, BuildOptions, ScaffoldOptions,
-    SkillArtifact, SkillRunOutput, build_skill, load_artifact, run_skill, save_artifact,
+    ArtifactKind, ArtifactProtocol, ArtifactSchema, ArtifactSource, BuildOptions, InstallOptions,
+    RunOptions, ScaffoldOptions, SkillArtifact, SkillRunOutput, build_skill, default_skills_dir,
+    install_local_skill, list_installed_skills, load_artifact, run_skill, save_artifact,
     scaffold_skill,
 };
