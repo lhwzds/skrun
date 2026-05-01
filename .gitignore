@@ -1,0 +1,62 @@
+.DS_Store
+
+# Cargo build output
+/target/
+/target-*/
+/target-release-check/
+/node_modules/
+
+# Internal development documentation
+/doc/
+/docs/
+/migration/**/Cargo.lock
+/migration/**/target/
+
+# Local agent guidance files
+CLAUDE.md
+AGENTS.md
+CODEX.md
+COPILOT.md
+GEMINI.md
+.agents/
+.codex/
+.opencode/
+.cursor/
+.windsurf/
+
+# Python environment and build output
+/python/.venv/
+/python/dist/
+/python/skrun/*.so
+
+# Local one-off maintenance scripts
+/scripts/local/
+
+# Hide UV enviroment Dont change
+/.uv
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+.playwright-mcp
+.skrun/
+.skrun-browser/
+
+# redb database files
+:memory:
+
+# WebKit temp files from MediaRecorder
+.tmp-voice*
+
+# Claude Code
+.claude/
+
+# Editor swap/backup files
+*.swp
+*.swo
+*~
+
+# VS Code local debug configurations
+.vscode/launch.json

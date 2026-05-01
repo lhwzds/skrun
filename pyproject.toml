@@ -1,0 +1,43 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "skrun"
+version = "0.1.0"
+description = "Python SDK for the skrun executable skill runtime."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+authors = [
+  { name = "skrun" }
+]
+keywords = [
+  "agent",
+  "skills",
+  "rust",
+  "python",
+  "runtime"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Software Development :: Build Tools"
+]
+
+[project.urls]
+Homepage = "https://github.com/lhwzds/skrun"
+Repository = "https://github.com/lhwzds/skrun"
+Documentation = "https://skrun.io"
+
+[tool.maturin]
+bindings = "pyo3"
+features = ["python-module"]
+manifest-path = "crates/py/Cargo.toml"
+module-name = "skrun.skrun_native"
+python-source = "python"

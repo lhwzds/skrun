@@ -1,0 +1,15 @@
+[package]
+name = "skrun"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[lib]
+name = "skrun"
+
+[dependencies]
+engine.workspace = true
+proto.workspace = true
+runtime.workspace = true
