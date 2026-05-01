@@ -1,0 +1,54 @@
+name: Publish Rust Crate
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: /tmp/skrun-cargo-target
+
+jobs:
+  publish:
+    name: Publish skrun to crates.io
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    environment: release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            /tmp/skrun-cargo-target
+          key: ${{ runner.os }}-publish-crates-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-publish-crates-
+
+      - name: Test publishable crate
+        run: cargo test -p skrun
+
+      - name: Verify package
+        run: cargo publish -p skrun --dry-run
+
+      - name: Authenticate with crates.io
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish package
+        run: cargo publish -p skrun
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
