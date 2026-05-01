@@ -38,6 +38,7 @@ Documentation = "https://skrun.io"
 [tool.maturin]
 bindings = "pyo3"
 features = ["python-module"]
+include = [{ path = "LICENSE", format = "sdist" }]
 manifest-path = "crates/py/Cargo.toml"
 module-name = "skrun.skrun_native"
 python-source = "python"
