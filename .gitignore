@@ -8,7 +8,6 @@
 
 # Internal development documentation
 /doc/
-/docs/
 /migration/**/Cargo.lock
 /migration/**/target/
 
