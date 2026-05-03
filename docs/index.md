@@ -1,6 +1,6 @@
 ---
 title: skrun
-description: Executable skills for AI agents.
+description: Build and run executable skills for AI agents.
 covers:
   - crates/*/src/*.rs
   - crates/py/build.rs
@@ -9,24 +9,26 @@ covers:
 
 # skrun
 
-skrun is a Python-first executable skill runtime for AI agent frameworks.
-It lets an agent discover, build, install, and call local skills without taking
-over the main agent loop.
+skrun builds and runs executable skills for AI agent frameworks.
+It packages Rust binaries and uv-backed Python projects behind one local
+stdin/stdout JSON contract, then lets an agent call those skills without giving
+up ownership of planning, chat, memory, or graph state.
 
 ## Why skrun
 
-- Build skills as small local executables.
-- Call Rust binary skills through a Python API.
-- Run uv-backed Python skills with the same JSON protocol.
-- Keep skill execution separate from the agent framework.
+- Build Rust binary skills as portable local artifacts.
+- Build uv-backed Python skills with the same executable contract.
+- Install skills under a local root and call them by id or path.
+- Keep skill execution separate from the agent framework's main loop.
+- Call skills through CLI, Rust runtime, or the Python `skrun` package.
 - Use documentation coverage checks to keep humans and coding agents aligned.
 
 ## Module Map
 
-The Rust workspace is split into narrow crates for skills, executable runtime,
-protocol types, command execution, storage traits, provider auth, events, and
-Python bindings. The Python package mirrors those runtime boundaries instead of
-shipping a separate fallback implementation.
+The important boundary is the executable skill runtime. The Rust workspace
+contains crates for skill metadata, artifact build/run, protocol types, command
+execution, and Python bindings. The Python package mirrors the Rust runtime
+boundary through PyO3 instead of shipping a separate subprocess fallback.
 
 ## Install
 
@@ -51,6 +53,13 @@ result = skrun.skill("regex-finder").call({
     }
 })
 ```
+
+## What skrun Does Not Own
+
+skrun is not a replacement for a personal coding agent, TUI, graph engine, or
+chat runtime. Agent frameworks such as RestFlow, Codex-style tools, LangGraph,
+or custom agents keep owning the model loop. skrun owns the executable skill
+artifact and the local call boundary.
 
 ## Documentation Map
 

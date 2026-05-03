@@ -1,6 +1,6 @@
 ---
 title: Examples
-description: Example executable skills shipped with skrun.
+description: Rust and Python executable skill examples shipped with skrun.
 covers:
   - examples/skills/*/src/*.rs
   - examples/skills/*/skill.py
@@ -10,7 +10,9 @@ covers:
 
 # Examples
 
-The skrun repository includes small examples under `examples/skills`.
+The skrun repository includes small executable skills under `examples/skills`.
+Each example is a normal local program plus `artifact.json`, optional schemas,
+and a strict stdin/stdout JSON entrypoint.
 
 ## regex-finder
 
@@ -53,6 +55,9 @@ The example demonstrates how an existing tool can become a skill by adding:
 - `SKILL.md`
 - input and output JSON schemas
 - a single stdin/stdout executable entrypoint
+
+That is the core skrun pattern: keep the useful local program, add a stable
+artifact manifest, and let an agent framework call it through skrun.
 
 ## Release Assets
 

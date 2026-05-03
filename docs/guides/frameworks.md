@@ -1,6 +1,6 @@
 ---
 title: Framework Integration
-description: Use executable skills from existing agent frameworks.
+description: Call executable skills from existing agent frameworks.
 covers:
   - examples/frameworks/*.py
   - python/tests/test_framework_examples.py
@@ -8,9 +8,10 @@ covers:
 
 # Framework Integration
 
-skrun does not replace LangChain, LangGraph, PydanticAI, OpenAI Agents, or any
-other main agent framework. It gives those frameworks a stable way to call local
-executable skills.
+skrun does not replace RestFlow, LangChain, LangGraph, PydanticAI, OpenAI
+Agents, or any other main agent framework. It gives those frameworks a stable
+way to call local executable skills while they keep ownership of planning,
+model calls, memory, graph state, and user interaction.
 
 ## Minimal Wrapper
 
@@ -23,6 +24,9 @@ def regex_finder_tool(arguments: dict) -> dict:
 ```
 
 The wrapper can be registered as a framework-specific tool function.
+
+The framework should treat skrun like a local tool boundary: validate the tool
+arguments, call the skill, and return the JSON result to the model or graph.
 
 ## LangChain Shape
 
@@ -53,8 +57,8 @@ control flow.
 
 Keep these responsibilities separate:
 
-- the agent framework owns planning, model calls, and graph state
-- skrun owns skill discovery, build, install, and local execution
+- the agent framework owns planning, model calls, chat state, and graph state
+- skrun owns skill discovery, artifact build, install, and local execution
 - each skill owns its own artifact contract and JSON schema
 
 The examples are intentionally dependency-light adapter shapes. Keep them
