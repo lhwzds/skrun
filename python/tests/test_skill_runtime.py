@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -112,6 +113,46 @@ class SkillRuntimeTests(unittest.TestCase):
 
         self.assertEqual([artifact.id for artifact in artifacts], ["py-echo"])
         self.assertEqual(self.native.calls, [("list", (str(Path("/tmp/skills").resolve()),))])
+
+    def test_runtime_decodes_markdown_only_skill(self) -> None:
+        def list_markdown(_root: str | None) -> str:
+            return json.dumps(
+                [
+                    {
+                        "schema_version": 1,
+                        "kind": "markdown",
+                        "id": "team",
+                        "name": "Team",
+                        "version": "0.1.0",
+                        "description": "Coordinate workers.",
+                        "tags": ["team"],
+                        "suggested_tools": ["spawn_agent"],
+                        "content": "# Team\n\nUse workers.",
+                        "executable": False,
+                    }
+                ]
+            )
+
+        self.native.runtime_list_skills_json = list_markdown  # type: ignore[method-assign]
+
+        artifact = SkillRuntime(root="/tmp/skills").list()[0]
+
+        self.assertEqual(artifact.kind, "markdown")
+        self.assertFalse(artifact.executable)
+        self.assertIsNone(artifact.entry)
+        self.assertEqual(artifact.suggested_tools, ["spawn_agent"])
+        self.assertEqual(artifact.content, "# Team\n\nUse workers.")
+
+    def test_runtime_resolves_markdown_only_local_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            skill_dir = Path(temp_dir) / "team"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text("# Team\n\nUse workers.", encoding="utf-8")
+
+            handle = SkillRuntime().skill(skill_dir)
+
+        self.assertEqual(handle.artifact.id, "team")
+        self.assertEqual(self.native.calls, [("load", (str(skill_dir.resolve()),))])
 
     def test_install_local_skill_uses_native_runtime(self) -> None:
         handle = skrun.install_local_skill(

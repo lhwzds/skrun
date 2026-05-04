@@ -48,12 +48,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub const ARTIFACT_FILE: &str = "artifact.json";
+pub const SKILL_FILE: &str = "SKILL.md";
 pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
 pub const SKILLS_DIR_ENV: &str = "SKRUN_SKILLS_DIR";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
+    Markdown,
     RustBinary,
     PythonUv,
 }
@@ -98,7 +100,20 @@ pub struct SkillArtifact {
     pub id: String,
     pub name: String,
     pub version: String,
-    pub entry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    #[serde(default = "default_executable")]
+    pub executable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
     #[serde(default)]
     pub protocol: ArtifactProtocol,
     #[serde(default)]
@@ -117,10 +132,16 @@ impl SkillArtifact {
         Self {
             schema_version: DEFAULT_SCHEMA_VERSION,
             kind: ArtifactKind::RustBinary,
-            entry: format!("bin/release/{}", executable_file_name(&id)),
-            id,
+            id: id.clone(),
             name: name.into(),
             version: version.into(),
+            description: None,
+            tags: None,
+            suggested_tools: Vec::new(),
+            content: None,
+            source_ref: None,
+            executable: true,
+            entry: Some(format!("bin/release/{}", executable_file_name(&id))),
             protocol: ArtifactProtocol::default(),
             schema: ArtifactSchema {
                 input: Some("schema/input.json".to_string()),
@@ -141,12 +162,43 @@ impl SkillArtifact {
             id: id.into(),
             name: name.into(),
             version: version.into(),
-            entry: "skill.py".to_string(),
+            description: None,
+            tags: None,
+            suggested_tools: Vec::new(),
+            content: None,
+            source_ref: None,
+            executable: true,
+            entry: Some("skill.py".to_string()),
             protocol: ArtifactProtocol::default(),
             schema: ArtifactSchema {
                 input: Some("schema/input.json".to_string()),
                 output: Some("schema/output.json".to_string()),
             },
+            source: None,
+        }
+    }
+
+    pub fn markdown(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            schema_version: DEFAULT_SCHEMA_VERSION,
+            kind: ArtifactKind::Markdown,
+            id: id.into(),
+            name: name.into(),
+            version: version.into(),
+            description: None,
+            tags: None,
+            suggested_tools: Vec::new(),
+            content: Some(content.into()),
+            source_ref: None,
+            executable: false,
+            entry: None,
+            protocol: ArtifactProtocol::default(),
+            schema: ArtifactSchema::default(),
             source: None,
         }
     }
@@ -159,22 +211,46 @@ impl SkillArtifact {
             );
         }
         validate_id(&self.id)?;
-        validate_relative_path(&self.entry, "entry")?;
-        if self.protocol.transport != "stdio-json" {
-            bail!("unsupported artifact protocol transport");
-        }
-        if let Some(input) = &self.schema.input {
-            validate_relative_path(input, "schema.input")?;
-        }
-        if let Some(output) = &self.schema.output {
-            validate_relative_path(output, "schema.output")?;
+        match self.kind {
+            ArtifactKind::Markdown => {
+                if self.executable {
+                    bail!("markdown skills must not be marked executable");
+                }
+            }
+            ArtifactKind::RustBinary | ArtifactKind::PythonUv => {
+                if !self.executable {
+                    bail!("executable skill artifacts must be marked executable");
+                }
+                let entry = self
+                    .entry
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("entry is required for executable skills"))?;
+                validate_relative_path(entry, "entry")?;
+                if self.protocol.transport != "stdio-json" {
+                    bail!("unsupported artifact protocol transport");
+                }
+                if let Some(input) = &self.schema.input {
+                    validate_relative_path(input, "schema.input")?;
+                }
+                if let Some(output) = &self.schema.output {
+                    validate_relative_path(output, "schema.output")?;
+                }
+            }
         }
         Ok(())
     }
 
-    pub fn entry_path(&self, root: impl AsRef<Path>) -> PathBuf {
-        root.as_ref().join(&self.entry)
+    pub fn entry_path(&self, root: impl AsRef<Path>) -> Result<PathBuf> {
+        let entry = self
+            .entry
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("entry is required for executable skills"))?;
+        Ok(root.as_ref().join(entry))
     }
+}
+
+fn default_executable() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +285,19 @@ impl ScaffoldOptions {
             name: name.into(),
             version: version.into(),
             kind: ArtifactKind::PythonUv,
+        }
+    }
+
+    pub fn markdown(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            version: version.into(),
+            kind: ArtifactKind::Markdown,
         }
     }
 }
@@ -285,13 +374,236 @@ pub fn artifact_path(root: impl AsRef<Path>) -> PathBuf {
     root.as_ref().join(ARTIFACT_FILE)
 }
 
+pub fn skill_markdown_path(root: impl AsRef<Path>) -> PathBuf {
+    root.as_ref().join(SKILL_FILE)
+}
+
+#[derive(Debug, Default)]
+struct MarkdownMetadata {
+    name: Option<String>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+    suggested_tools: Vec<String>,
+    version: Option<String>,
+    source_ref: Option<String>,
+    content: String,
+}
+
+fn load_markdown_artifact(root: &Path) -> Result<SkillArtifact> {
+    let metadata = read_skill_markdown(root)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "skill directory must contain either {} or {}",
+            ARTIFACT_FILE,
+            SKILL_FILE
+        )
+    })?;
+    let id = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("skill directory has no valid id"))?
+        .to_string();
+    validate_id(&id)?;
+    let name = metadata
+        .name
+        .clone()
+        .or_else(|| heading_title(&metadata.content))
+        .unwrap_or_else(|| title_from_id(&id));
+    let mut artifact = SkillArtifact::markdown(
+        id,
+        name,
+        metadata
+            .version
+            .clone()
+            .unwrap_or_else(|| "0.1.0".to_string()),
+        metadata.content,
+    );
+    artifact.description = metadata.description;
+    artifact.tags = metadata.tags;
+    artifact.suggested_tools = metadata.suggested_tools;
+    artifact.source_ref = metadata.source_ref;
+    Ok(artifact)
+}
+
+fn apply_skill_markdown(root: &Path, artifact: &mut SkillArtifact) -> Result<()> {
+    let Some(metadata) = read_skill_markdown(root)? else {
+        return Ok(());
+    };
+    if artifact.description.is_none() {
+        artifact.description = metadata.description;
+    }
+    if artifact.tags.is_none() {
+        artifact.tags = metadata.tags;
+    }
+    if artifact.suggested_tools.is_empty() {
+        artifact.suggested_tools = metadata.suggested_tools;
+    }
+    if artifact.content.is_none() {
+        artifact.content = Some(metadata.content);
+    }
+    if artifact.source_ref.is_none() {
+        artifact.source_ref = metadata.source_ref;
+    }
+    Ok(())
+}
+
+fn read_skill_markdown(root: &Path) -> Result<Option<MarkdownMetadata>> {
+    let path = skill_markdown_path(root);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let markdown = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    Ok(Some(parse_skill_markdown(&markdown)))
+}
+
+fn parse_skill_markdown(markdown: &str) -> MarkdownMetadata {
+    let mut metadata = MarkdownMetadata::default();
+    if !markdown.starts_with("---") {
+        metadata.content = markdown.trim().to_string();
+        return metadata;
+    }
+
+    let lines = markdown.lines().collect::<Vec<_>>();
+    let Some(end_line) = lines
+        .iter()
+        .skip(1)
+        .position(|line| line.trim() == "---")
+        .map(|index| index + 1)
+    else {
+        metadata.content = markdown.trim().to_string();
+        return metadata;
+    };
+
+    parse_frontmatter(
+        &lines[1..end_line].join(
+            "
+",
+        ),
+        &mut metadata,
+    );
+    metadata.content = lines[end_line + 1..]
+        .join(
+            "
+",
+        )
+        .trim()
+        .to_string();
+    metadata
+}
+
+fn parse_frontmatter(frontmatter: &str, metadata: &mut MarkdownMetadata) {
+    let mut current_list: Option<&str> = None;
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(item) = trimmed.strip_prefix("- ") {
+            match current_list {
+                Some("tags") => metadata
+                    .tags
+                    .get_or_insert_with(Vec::new)
+                    .push(clean_scalar(item)),
+                Some("suggested_tools") => metadata.suggested_tools.push(clean_scalar(item)),
+                _ => {}
+            }
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            current_list = None;
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        current_list = None;
+        match key {
+            "name" if !value.is_empty() => metadata.name = Some(clean_scalar(value)),
+            "description" if !value.is_empty() => metadata.description = Some(clean_scalar(value)),
+            "version" if !value.is_empty() => metadata.version = Some(clean_scalar(value)),
+            "source_ref" | "ref" if !value.is_empty() => {
+                metadata.source_ref = Some(clean_scalar(value));
+            }
+            "tags" => {
+                if value.is_empty() {
+                    metadata.tags = Some(Vec::new());
+                    current_list = Some("tags");
+                } else {
+                    metadata.tags = Some(parse_inline_list(value));
+                }
+            }
+            "suggested_tools" => {
+                if value.is_empty() {
+                    current_list = Some("suggested_tools");
+                } else {
+                    metadata.suggested_tools = parse_inline_list(value);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn parse_inline_list(value: &str) -> Vec<String> {
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(value);
+    inner
+        .split(',')
+        .map(clean_scalar)
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+fn clean_scalar(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+fn heading_title(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let title = line.trim().strip_prefix("# ")?.trim();
+        (!title.is_empty()).then(|| title.to_string())
+    })
+}
+
+fn title_from_id(id: &str) -> String {
+    id.split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn kind_label(kind: &ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Markdown => "markdown",
+        ArtifactKind::RustBinary => "rust_binary",
+        ArtifactKind::PythonUv => "python_uv",
+    }
+}
+
 pub fn load_artifact(root: impl AsRef<Path>) -> Result<SkillArtifact> {
     let root = root.as_ref();
-    let artifact: SkillArtifact = serde_json::from_str(
-        &fs::read_to_string(artifact_path(root))
-            .with_context(|| format!("read {}", artifact_path(root).display()))?,
-    )
-    .with_context(|| format!("decode {}", artifact_path(root).display()))?;
+    let artifact = if artifact_path(root).is_file() {
+        let mut artifact: SkillArtifact = serde_json::from_str(
+            &fs::read_to_string(artifact_path(root))
+                .with_context(|| format!("read {}", artifact_path(root).display()))?,
+        )
+        .with_context(|| format!("decode {}", artifact_path(root).display()))?;
+        apply_skill_markdown(root, &mut artifact)?;
+        artifact
+    } else {
+        load_markdown_artifact(root)?
+    };
     artifact.validate()?;
     Ok(artifact)
 }
@@ -312,23 +624,37 @@ pub fn scaffold_skill(root: impl AsRef<Path>, options: ScaffoldOptions) -> Resul
     validate_id(&options.id)?;
     let root = root.as_ref();
     fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
-    fs::create_dir_all(root.join("schema"))
-        .with_context(|| format!("create {}", root.join("schema").display()))?;
 
     let artifact = match options.kind {
+        ArtifactKind::Markdown => {
+            let content = format!(
+                "# {}\n\nUse this guidance skill for focused agent instructions.",
+                options.name
+            );
+            SkillArtifact::markdown(options.id, options.name, options.version, content)
+        }
         ArtifactKind::RustBinary => {
+            fs::create_dir_all(root.join("schema"))
+                .with_context(|| format!("create {}", root.join("schema").display()))?;
             scaffold_rust_binary(root, &options)?;
-            SkillArtifact::rust_binary(options.id, options.name, options.version)
+            let artifact = SkillArtifact::rust_binary(options.id, options.name, options.version);
+            write_default_schemas(root)?;
+            artifact
         }
         ArtifactKind::PythonUv => {
+            fs::create_dir_all(root.join("schema"))
+                .with_context(|| format!("create {}", root.join("schema").display()))?;
             scaffold_python_uv(root, &options)?;
-            SkillArtifact::python_uv(options.id, options.name, options.version)
+            let artifact = SkillArtifact::python_uv(options.id, options.name, options.version);
+            write_default_schemas(root)?;
+            artifact
         }
     };
 
-    write_default_schemas(root)?;
     write_skill_markdown(root, &artifact)?;
-    save_artifact(root, &artifact)?;
+    if artifact.executable {
+        save_artifact(root, &artifact)?;
+    }
     Ok(artifact)
 }
 
@@ -336,6 +662,10 @@ pub fn build_skill(root: impl AsRef<Path>, options: &BuildOptions) -> Result<Ski
     let root = root.as_ref();
     let artifact = load_artifact(root)?;
     match artifact.kind {
+        ArtifactKind::Markdown => bail!(
+            "skill '{}' is guidance-only and cannot be built",
+            artifact.id
+        ),
         ArtifactKind::RustBinary => build_rust_binary(root, &artifact, options)?,
         ArtifactKind::PythonUv => build_python_uv(root, options)?,
     }
@@ -352,28 +682,34 @@ pub fn run_skill(
         .canonicalize()
         .with_context(|| format!("resolve {}", root.as_ref().display()))?;
     let artifact = load_artifact(&root)?;
-    let mut command = match artifact.kind {
-        ArtifactKind::RustBinary => {
-            let executable = artifact.entry_path(&root);
-            if !executable.is_file() {
-                bail!("skill executable not found: {}", executable.display());
+    let mut command =
+        match artifact.kind {
+            ArtifactKind::Markdown => {
+                bail!("skill '{}' is guidance-only and cannot be run", artifact.id)
             }
-            let mut command = Command::new(executable);
-            command.current_dir(&root);
-            command
-        }
-        ArtifactKind::PythonUv => {
-            let mut command = Command::new(&options.uv);
-            command
-                .arg("run")
-                .arg("--project")
-                .arg(&root)
-                .arg("python")
-                .arg(&artifact.entry);
-            command.current_dir(&root);
-            command
-        }
-    };
+            ArtifactKind::RustBinary => {
+                let executable = artifact.entry_path(&root)?;
+                if !executable.is_file() {
+                    bail!("skill executable not found: {}", executable.display());
+                }
+                let mut command = Command::new(executable);
+                command.current_dir(&root);
+                command
+            }
+            ArtifactKind::PythonUv => {
+                let mut command = Command::new(&options.uv);
+                command
+                    .arg("run")
+                    .arg("--project")
+                    .arg(&root)
+                    .arg("python")
+                    .arg(artifact.entry.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("entry is required for python_uv skills")
+                    })?);
+                command.current_dir(&root);
+                command
+            }
+        };
 
     let output = run_json_command(&mut command, &input, options.timeout)
         .with_context(|| format!("run skill `{}`", artifact.id))?;
@@ -396,7 +732,9 @@ pub fn list_installed_skills(root: impl AsRef<Path>) -> Result<Vec<SkillArtifact
     let mut artifacts = Vec::new();
     for item in fs::read_dir(root).with_context(|| format!("read {}", root.display()))? {
         let path = item?.path();
-        if !path.is_dir() || !artifact_path(&path).is_file() {
+        if !path.is_dir()
+            || (!artifact_path(&path).is_file() && !skill_markdown_path(&path).is_file())
+        {
             continue;
         }
         if let Ok(artifact) = load_artifact(&path) {
@@ -562,14 +900,32 @@ fn write_default_schemas(root: &Path) -> Result<()> {
 }
 
 fn write_skill_markdown(root: &Path, artifact: &SkillArtifact) -> Result<()> {
-    fs::write(
-        root.join("SKILL.md"),
+    let description = artifact
+        .description
+        .as_deref()
+        .unwrap_or(if artifact.executable {
+            "Executable skrun skill."
+        } else {
+            "Guidance-only skrun skill."
+        });
+    let body = artifact.content.clone().unwrap_or_else(|| {
         format!(
-            "# {}\n\nExecutable skrun skill.\n\n- id: `{}`\n- kind: `{:?}`\n- version: `{}`\n",
-            artifact.name, artifact.id, artifact.kind, artifact.version
+            "# {}\n\n{}\n\n- id: `{}`\n- kind: `{}`\n- version: `{}`",
+            artifact.name,
+            description,
+            artifact.id,
+            kind_label(&artifact.kind),
+            artifact.version
+        )
+    });
+    fs::write(
+        skill_markdown_path(root),
+        format!(
+            "---\nname: {}\ndescription: {}\nversion: {}\n---\n\n{}\n",
+            artifact.name, description, artifact.version, body
         ),
     )
-    .with_context(|| format!("write {}", root.join("SKILL.md").display()))?;
+    .with_context(|| format!("write {}", skill_markdown_path(root).display()))?;
     Ok(())
 }
 
@@ -597,7 +953,7 @@ fn build_rust_binary(root: &Path, artifact: &SkillArtifact, options: &BuildOptio
     let built_binary = target_dir
         .join(&options.profile)
         .join(executable_file_name(&artifact.id));
-    let entry_path = artifact.entry_path(root);
+    let entry_path = artifact.entry_path(root)?;
     let entry_parent = entry_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("artifact entry has no parent"))?;
@@ -736,7 +1092,7 @@ mod tests {
     #[test]
     fn artifact_rejects_unsafe_paths() {
         let mut artifact = SkillArtifact::rust_binary("safe-id", "Safe", "0.1.0");
-        artifact.entry = "../bin/safe-id".to_string();
+        artifact.entry = Some("../bin/safe-id".to_string());
 
         let error = artifact.validate().unwrap_err();
 
@@ -789,7 +1145,7 @@ mod tests {
         let root = temp_dir("run-artifact");
         let artifact = SkillArtifact::rust_binary("echo", "Echo", "0.1.0");
         save_artifact(&root, &artifact).unwrap();
-        let entry = artifact.entry_path(&root);
+        let entry = artifact.entry_path(&root).unwrap();
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::write(&entry, "#!/bin/sh\ncat\n").unwrap();
         let mut permissions = fs::metadata(&entry).unwrap().permissions();
@@ -816,7 +1172,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let artifact = SkillArtifact::rust_binary("echo", "Echo", "0.1.0");
         save_artifact(&root, &artifact).unwrap();
-        let entry = artifact.entry_path(&root);
+        let entry = artifact.entry_path(&root).unwrap();
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::write(&entry, "#!/bin/sh\ncat\n").unwrap();
         let mut permissions = fs::metadata(&entry).unwrap().permissions();
@@ -852,6 +1208,102 @@ mod tests {
         assert!(target.join("py-echo").join("artifact.json").is_file());
     }
 
+    #[test]
+    fn markdown_skill_loads_without_artifact_json() {
+        let root = temp_dir("markdown-load");
+        fs::write(
+            root.join("SKILL.md"),
+            "---\nname: Team\ndescription: Coordinate workers.\ntags:\n  - system\n  - team\nsuggested_tools:\n  - spawn_agent\nversion: 1.2.3\n---\n\n# Team\n\nUse parallel workers.",
+        )
+        .unwrap();
+
+        let artifact = load_artifact(&root).unwrap();
+
+        assert_eq!(artifact.kind, ArtifactKind::Markdown);
+        assert_eq!(artifact.id, root.file_name().unwrap().to_str().unwrap());
+        assert_eq!(artifact.name, "Team");
+        assert_eq!(artifact.description.as_deref(), Some("Coordinate workers."));
+        assert_eq!(
+            artifact.tags,
+            Some(vec!["system".to_string(), "team".to_string()])
+        );
+        assert_eq!(artifact.suggested_tools, vec!["spawn_agent"]);
+        assert_eq!(artifact.version, "1.2.3");
+        assert_eq!(
+            artifact.content.as_deref(),
+            Some("# Team\n\nUse parallel workers.")
+        );
+        assert!(!artifact.executable);
+        assert!(artifact.entry.is_none());
+    }
+
+    #[test]
+    fn markdown_skill_without_frontmatter_uses_heading() {
+        let root = temp_dir("markdown-heading");
+        fs::write(root.join("SKILL.md"), "# Review Code\n\nInspect changes.").unwrap();
+
+        let artifact = load_artifact(&root).unwrap();
+
+        assert_eq!(artifact.kind, ArtifactKind::Markdown);
+        assert_eq!(artifact.name, "Review Code");
+        assert_eq!(artifact.version, "0.1.0");
+        assert_eq!(
+            artifact.content.as_deref(),
+            Some("# Review Code\n\nInspect changes.")
+        );
+    }
+
+    #[test]
+    fn markdown_skill_run_returns_guidance_only_error() {
+        let root = temp_dir("markdown-run");
+        fs::write(root.join("SKILL.md"), "# Plan\n\nThink first.").unwrap();
+
+        let error = run_skill(&root, serde_json::json!({}), &RunOptions::default()).unwrap_err();
+
+        assert!(error.to_string().contains("guidance-only"));
+    }
+
+    #[test]
+    fn install_local_skill_copies_markdown_directory() {
+        let source = temp_dir("markdown-install-source");
+        let target = temp_dir("markdown-install-target");
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: Planner\n---\n\n# Planner\n",
+        )
+        .unwrap();
+
+        let artifact = install_local_skill(&source, &InstallOptions::new(&target)).unwrap();
+        let listed = list_installed_skills(&target).unwrap();
+
+        assert_eq!(artifact.kind, ArtifactKind::Markdown);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, ArtifactKind::Markdown);
+        assert!(target.join(artifact.id).join("SKILL.md").is_file());
+    }
+
+    #[test]
+    fn scaffold_markdown_writes_skill_only_and_round_trips_content() {
+        let root = temp_dir("markdown-scaffold");
+
+        let artifact = scaffold_skill(
+            &root,
+            ScaffoldOptions::markdown("plan-first", "Plan First", "0.2.0"),
+        )
+        .unwrap();
+        let loaded = load_artifact(&root).unwrap();
+
+        assert_eq!(artifact.kind, ArtifactKind::Markdown);
+        assert!(!root.join("artifact.json").exists());
+        assert!(root.join("SKILL.md").is_file());
+        assert_eq!(loaded.kind, ArtifactKind::Markdown);
+        assert_eq!(loaded.content, artifact.content);
+        assert_eq!(
+            loaded.content.as_deref(),
+            Some("# Plan First\n\nUse this guidance skill for focused agent instructions.")
+        );
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -868,9 +1320,22 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = PathBuf::from("../../target")
-            .join(format!("skrun-runtime-{name}-{}-{now}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        root
+        let absolute_root =
+            std::env::temp_dir().join(format!("skrun-runtime-{name}-{}-{now}", std::process::id()));
+        fs::create_dir_all(&absolute_root).unwrap();
+
+        let current_dir = std::env::current_dir().unwrap();
+        let mut relative = PathBuf::new();
+        for component in current_dir.components() {
+            if matches!(component, std::path::Component::Normal(_)) {
+                relative.push("..");
+            }
+        }
+        for component in absolute_root.components() {
+            if let std::path::Component::Normal(part) = component {
+                relative.push(part);
+            }
+        }
+        relative
     }
 }

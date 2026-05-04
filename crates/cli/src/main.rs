@@ -32,7 +32,8 @@
 use anyhow::{Context, Result, bail};
 use runtime::{
     ArtifactKind, BuildOptions, InstallOptions, RunOptions, ScaffoldOptions, build_skill,
-    default_skills_dir, install_local_skill, list_installed_skills, run_skill, scaffold_skill,
+    default_skills_dir, install_local_skill, list_installed_skills, load_artifact, run_skill,
+    scaffold_skill,
 };
 use serde_json::Value;
 use std::env;
@@ -70,7 +71,11 @@ fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Command::Skill(SkillCommand::Run(options)) => {
-            let output = run_skill(&options.dir, options.input, &options.run)?;
+            let root = match options.target {
+                RunTarget::Dir(dir) => dir,
+                RunTarget::Installed { root, id } => root.join(id),
+            };
+            let output = run_skill(root, options.input, &options.run)?;
             println!("{}", serde_json::to_string_pretty(&output.value)?);
             Ok(())
         }
@@ -84,7 +89,27 @@ fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Command::Skill(SkillCommand::List(options)) => {
-            for artifact in list_installed_skills(&options.root)? {
+            let artifacts = list_installed_skills(&options.root)?;
+            if options.format == OutputFormat::Json {
+                println!("{}", serde_json::to_string_pretty(&artifacts)?);
+            } else {
+                for artifact in artifacts {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        artifact.id,
+                        kind_label(&artifact.kind),
+                        artifact.version,
+                        artifact.name
+                    );
+                }
+            }
+            Ok(())
+        }
+        Command::Skill(SkillCommand::Show(options)) => {
+            let artifact = load_artifact(options.root.join(&options.id))?;
+            if options.format == OutputFormat::Json {
+                println!("{}", serde_json::to_string_pretty(&artifact)?);
+            } else {
                 println!(
                     "{}\t{}\t{}\t{}",
                     artifact.id,
@@ -111,6 +136,7 @@ enum SkillCommand {
     Run(RunCommand),
     InstallLocal(InstallLocalCommand),
     List(ListCommand),
+    Show(ShowCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,9 +153,15 @@ struct BuildCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 struct RunCommand {
-    dir: PathBuf,
+    target: RunTarget,
     input: Value,
     run: RunOptions,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum RunTarget {
+    Dir(PathBuf),
+    Installed { root: PathBuf, id: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +173,20 @@ struct InstallLocalCommand {
 #[derive(Debug, Clone, PartialEq)]
 struct ListCommand {
     root: PathBuf,
+    format: OutputFormat,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ShowCommand {
+    root: PathBuf,
+    id: String,
+    format: OutputFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
 }
 
 fn parse(args: Vec<String>) -> Result<Command> {
@@ -161,6 +207,7 @@ fn parse_skill(mut cursor: Cursor) -> Result<SkillCommand> {
         "run" => parse_skill_run(cursor).map(SkillCommand::Run),
         "install-local" => parse_skill_install_local(cursor).map(SkillCommand::InstallLocal),
         "list" => parse_skill_list(cursor).map(SkillCommand::List),
+        "show" => parse_skill_show(cursor).map(SkillCommand::Show),
         other => bail!("unknown skill command `{other}`"),
     }
 }
@@ -188,6 +235,7 @@ fn parse_skill_new(mut cursor: Cursor) -> Result<NewCommand> {
     let name = name.unwrap_or_else(|| title_from_id(&id));
     let dir = dir.ok_or_else(|| anyhow::anyhow!("missing skill directory"))?;
     let scaffold = match kind {
+        ArtifactKind::Markdown => ScaffoldOptions::markdown(id, name, version),
         ArtifactKind::RustBinary => ScaffoldOptions::rust_binary(id, name, version),
         ArtifactKind::PythonUv => ScaffoldOptions::python_uv(id, name, version),
     };
@@ -222,6 +270,8 @@ fn parse_skill_run(mut cursor: Cursor) -> Result<RunCommand> {
     let mut run = RunOptions::default();
     let mut input = serde_json::json!({});
     let mut dir = None;
+    let mut id = None;
+    let mut root = None;
 
     while let Some(arg) = cursor.next() {
         match arg.as_str() {
@@ -240,16 +290,24 @@ fn parse_skill_run(mut cursor: Cursor) -> Result<RunCommand> {
                 run.timeout = Duration::from_secs(seconds);
             }
             "--uv" => run.uv = OsString::from(cursor.next_required("--uv value")?),
+            "--id" => id = Some(cursor.next_required("--id value")?),
+            "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
             value if value.starts_with('-') => bail!("unknown option `{value}`"),
             value => dir = Some(PathBuf::from(value)),
         }
     }
 
-    Ok(RunCommand {
-        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skill directory"))?,
-        input,
-        run,
-    })
+    let target = match (dir, id) {
+        (Some(_), Some(_)) => bail!("skill run accepts either --id or a directory, not both"),
+        (Some(dir), None) => RunTarget::Dir(dir),
+        (None, Some(id)) => RunTarget::Installed {
+            root: root.unwrap_or(default_skills_dir()?),
+            id,
+        },
+        (None, None) => bail!("missing skill directory or --id"),
+    };
+
+    Ok(RunCommand { target, input, run })
 }
 
 fn parse_skill_install_local(mut cursor: Cursor) -> Result<InstallLocalCommand> {
@@ -282,19 +340,42 @@ fn parse_skill_install_local(mut cursor: Cursor) -> Result<InstallLocalCommand> 
 
 fn parse_skill_list(mut cursor: Cursor) -> Result<ListCommand> {
     let mut root = None;
+    let mut format = OutputFormat::Text;
     while let Some(arg) = cursor.next() {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
+            "--format" => format = parse_output_format(&cursor.next_required("--format value")?)?,
             value => bail!("unknown argument `{value}`"),
         }
     }
     Ok(ListCommand {
         root: root.unwrap_or(default_skills_dir()?),
+        format,
+    })
+}
+
+fn parse_skill_show(mut cursor: Cursor) -> Result<ShowCommand> {
+    let mut root = None;
+    let mut format = OutputFormat::Text;
+    let mut id = None;
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
+            "--format" => format = parse_output_format(&cursor.next_required("--format value")?)?,
+            value if value.starts_with('-') => bail!("unknown argument `{value}`"),
+            value => id = Some(value.to_string()),
+        }
+    }
+    Ok(ShowCommand {
+        root: root.unwrap_or(default_skills_dir()?),
+        id: id.ok_or_else(|| anyhow::anyhow!("missing skill id"))?,
+        format,
     })
 }
 
 fn parse_kind(value: &str) -> Result<ArtifactKind> {
     match value {
+        "markdown" | "guidance" => Ok(ArtifactKind::Markdown),
         "rust_binary" => Ok(ArtifactKind::RustBinary),
         "python_uv" => Ok(ArtifactKind::PythonUv),
         other => bail!("unknown skill kind `{other}`"),
@@ -317,8 +398,17 @@ fn title_from_id(id: &str) -> String {
 
 fn kind_label(kind: &ArtifactKind) -> &'static str {
     match kind {
+        ArtifactKind::Markdown => "markdown",
         ArtifactKind::RustBinary => "rust_binary",
         ArtifactKind::PythonUv => "python_uv",
+    }
+}
+
+fn parse_output_format(value: &str) -> Result<OutputFormat> {
+    match value {
+        "text" => Ok(OutputFormat::Text),
+        "json" => Ok(OutputFormat::Json),
+        other => bail!("unknown output format `{other}`"),
     }
 }
 
@@ -348,11 +438,13 @@ impl Cursor {
 fn print_usage() {
     println!(
         r#"Usage:
-  skrun skill new --kind rust_binary|python_uv --id <id> [--name <name>] [--version <version>] <dir>
+  skrun skill new --kind markdown|rust_binary|python_uv --id <id> [--name <name>] [--version <version>] <dir>
   skrun skill build [--profile release] [--target-dir <dir>] <dir>
   skrun skill run [--input <json-object>] [--timeout <seconds>] <dir>
+  skrun skill run --id <id> [--root <dir>] [--input <json-object>] [--timeout <seconds>]
   skrun skill install-local [--root <dir>] [--id <id>] [--overwrite] <dir>
-  skrun skill list [--root <dir>]
+  skrun skill list [--root <dir>] [--format text|json]
+  skrun skill show [--root <dir>] [--format text|json] <id>
 "#
     );
 }
@@ -384,6 +476,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_skill_new_guidance_command() {
+        let command = parse(vec![
+            "skill".to_string(),
+            "new".to_string(),
+            "--kind".to_string(),
+            "guidance".to_string(),
+            "--id".to_string(),
+            "team".to_string(),
+            "skills/team".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Skill(SkillCommand::New(command)) = command else {
+            panic!("expected skill new command");
+        };
+        assert_eq!(command.dir, PathBuf::from("skills/team"));
+        assert_eq!(command.scaffold.id, "team");
+        assert_eq!(command.scaffold.kind, ArtifactKind::Markdown);
+    }
+
+    #[test]
     fn parses_skill_run_input() {
         let command = parse(vec![
             "skill".to_string(),
@@ -398,5 +511,46 @@ mod tests {
             panic!("expected skill run command");
         };
         assert_eq!(command.input, serde_json::json!({ "ok": true }));
+        assert_eq!(command.target, RunTarget::Dir(PathBuf::from("skills/echo")));
+    }
+
+    #[test]
+    fn parses_skill_list_json_format() {
+        let command = parse(vec![
+            "skill".to_string(),
+            "list".to_string(),
+            "--root".to_string(),
+            "installed".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Skill(SkillCommand::List(command)) = command else {
+            panic!("expected skill list command");
+        };
+        assert_eq!(command.root, PathBuf::from("installed"));
+        assert_eq!(command.format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn parses_skill_show_json_format() {
+        let command = parse(vec![
+            "skill".to_string(),
+            "show".to_string(),
+            "--root".to_string(),
+            "installed".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+            "team".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Skill(SkillCommand::Show(command)) = command else {
+            panic!("expected skill show command");
+        };
+        assert_eq!(command.root, PathBuf::from("installed"));
+        assert_eq!(command.id, "team");
+        assert_eq!(command.format, OutputFormat::Json);
     }
 }

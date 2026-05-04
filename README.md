@@ -33,16 +33,17 @@ auth    secrets, auth profiles, and provider access policy
 event   stream, trace, and telemetry event types
 ```
 
-## Executable Skills
+## Skills
 
-skrun supports two local artifact kinds:
+skrun supports guidance-only Markdown skills and executable artifacts:
 
 ```text
+markdown     SKILL.md-only guidance skill, listed and shown but not executed
 rust_binary  Cargo-built executable skill, called with stdin/stdout JSON
 python_uv    uv-managed Python project, called with stdin/stdout JSON
 ```
 
-Each skill directory contains an `artifact.json` manifest:
+Executable skill directories contain an `artifact.json` manifest:
 
 ```json
 {
@@ -108,9 +109,12 @@ maintain a separate subprocess runtime fallback.
 
 ## CLI Skill Loop
 
-The minimal CLI exists only for executable skills:
+The minimal CLI can scaffold guidance or executable skills:
 
 ```bash
+cargo run -p cli -- \
+  skill new --kind markdown --id team /tmp/team
+
 cargo run -p cli -- \
   skill new --kind rust_binary --id rust-echo /tmp/rust-echo
 
@@ -124,7 +128,10 @@ cargo run -p cli -- \
   skill install-local --root /tmp/skrun-skills --overwrite /tmp/rust-echo
 
 cargo run -p cli -- \
-  skill list --root /tmp/skrun-skills
+  skill list --root /tmp/skrun-skills --format json
+
+cargo run -p cli -- \
+  skill show --root /tmp/skrun-skills --format json rust-echo
 ```
 
 Example skills live under `examples/skills`:

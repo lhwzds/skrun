@@ -97,7 +97,13 @@ class SkillArtifact:
     id: str
     name: str
     version: str
-    entry: str
+    description: str | None = None
+    tags: list[str] | None = None
+    suggested_tools: list[str] = field(default_factory=list)
+    content: str | None = None
+    source_ref: str | None = None
+    executable: bool = True
+    entry: str | None = None
     protocol: ArtifactProtocol = field(default_factory=ArtifactProtocol)
     schema: ArtifactSchema = field(default_factory=ArtifactSchema)
     source: ArtifactSource | None = None
@@ -113,7 +119,13 @@ class SkillArtifact:
             id=str(value["id"]),
             name=str(value["name"]),
             version=str(value["version"]),
-            entry=str(value["entry"]),
+            description=value.get("description"),
+            tags=list(value["tags"]) if isinstance(value.get("tags"), list) else None,
+            suggested_tools=[str(item) for item in value.get("suggested_tools", [])],
+            content=value.get("content"),
+            source_ref=value.get("source_ref"),
+            executable=bool(value.get("executable", True)),
+            entry=str(value["entry"]) if value.get("entry") is not None else None,
             protocol=ArtifactProtocol(
                 transport=str(protocol.get("transport", "stdio-json")),
                 input=str(protocol.get("input", "single-json-value")),
@@ -130,7 +142,7 @@ class SkillArtifact:
             "id": self.id,
             "name": self.name,
             "version": self.version,
-            "entry": self.entry,
+            "executable": self.executable,
             "protocol": {
                 "transport": self.protocol.transport,
                 "input": self.protocol.input,
@@ -141,6 +153,18 @@ class SkillArtifact:
                 "output": self.schema.output,
             },
         }
+        if self.description is not None:
+            body["description"] = self.description
+        if self.tags is not None:
+            body["tags"] = self.tags
+        if self.suggested_tools:
+            body["suggested_tools"] = list(self.suggested_tools)
+        if self.content is not None:
+            body["content"] = self.content
+        if self.source_ref is not None:
+            body["source_ref"] = self.source_ref
+        if self.entry is not None:
+            body["entry"] = self.entry
         if self.source is not None:
             body["source"] = self.source.to_dict()
         return body
@@ -166,6 +190,8 @@ class SkillHandle:
         return _json_object(output_json, "skill output")
 
     def _entry_path(self) -> Path:
+        if self.artifact.entry is None:
+            raise SkillRuntimeError("guidance-only skill has no executable entry")
         return self.root / self.artifact.entry
 
 
@@ -209,7 +235,7 @@ class SkillRuntime:
 
     def resolve_skill_dir(self, id_or_path: str | Path) -> Path:
         candidate = Path(id_or_path).expanduser()
-        if (candidate / "artifact.json").is_file():
+        if (candidate / "artifact.json").is_file() or (candidate / "SKILL.md").is_file():
             return candidate.resolve()
         return self.base_dir() / str(id_or_path)
 

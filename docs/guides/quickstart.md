@@ -76,9 +76,10 @@ import skrun
 result = skrun.skill("rust-echo").call({"ok": True})
 ```
 
-## Artifact Layout
+## Skill Layout
 
-Every executable skill directory contains an `artifact.json` manifest:
+Markdown guidance skills can be a directory with only `SKILL.md`. Executable
+skill directories contain an `artifact.json` manifest:
 
 ```json
 {

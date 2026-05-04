@@ -235,6 +235,7 @@ fn parse_skill_new(mut cursor: Cursor) -> Result<NewCommand> {
     let name = name.unwrap_or_else(|| title_from_id(&id));
     let dir = dir.ok_or_else(|| anyhow::anyhow!("missing skill directory"))?;
     let scaffold = match kind {
+        ArtifactKind::Markdown => ScaffoldOptions::markdown(id, name, version),
         ArtifactKind::RustBinary => ScaffoldOptions::rust_binary(id, name, version),
         ArtifactKind::PythonUv => ScaffoldOptions::python_uv(id, name, version),
     };
@@ -374,6 +375,7 @@ fn parse_skill_show(mut cursor: Cursor) -> Result<ShowCommand> {
 
 fn parse_kind(value: &str) -> Result<ArtifactKind> {
     match value {
+        "markdown" | "guidance" => Ok(ArtifactKind::Markdown),
         "rust_binary" => Ok(ArtifactKind::RustBinary),
         "python_uv" => Ok(ArtifactKind::PythonUv),
         other => bail!("unknown skill kind `{other}`"),
@@ -396,6 +398,7 @@ fn title_from_id(id: &str) -> String {
 
 fn kind_label(kind: &ArtifactKind) -> &'static str {
     match kind {
+        ArtifactKind::Markdown => "markdown",
         ArtifactKind::RustBinary => "rust_binary",
         ArtifactKind::PythonUv => "python_uv",
     }
@@ -435,7 +438,7 @@ impl Cursor {
 fn print_usage() {
     println!(
         r#"Usage:
-  skrun skill new --kind rust_binary|python_uv --id <id> [--name <name>] [--version <version>] <dir>
+  skrun skill new --kind markdown|rust_binary|python_uv --id <id> [--name <name>] [--version <version>] <dir>
   skrun skill build [--profile release] [--target-dir <dir>] <dir>
   skrun skill run [--input <json-object>] [--timeout <seconds>] <dir>
   skrun skill run --id <id> [--root <dir>] [--input <json-object>] [--timeout <seconds>]
@@ -470,6 +473,27 @@ mod tests {
         assert_eq!(command.scaffold.id, "regex-finder");
         assert_eq!(command.scaffold.name, "Regex Finder");
         assert_eq!(command.scaffold.kind, ArtifactKind::RustBinary);
+    }
+
+    #[test]
+    fn parses_skill_new_guidance_command() {
+        let command = parse(vec![
+            "skill".to_string(),
+            "new".to_string(),
+            "--kind".to_string(),
+            "guidance".to_string(),
+            "--id".to_string(),
+            "team".to_string(),
+            "skills/team".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Skill(SkillCommand::New(command)) = command else {
+            panic!("expected skill new command");
+        };
+        assert_eq!(command.dir, PathBuf::from("skills/team"));
+        assert_eq!(command.scaffold.id, "team");
+        assert_eq!(command.scaffold.kind, ArtifactKind::Markdown);
     }
 
     #[test]
@@ -530,6 +554,27 @@ mod tests {
             panic!("expected skill list command");
         };
         assert_eq!(command.root, PathBuf::from("installed"));
+        assert_eq!(command.format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn parses_skill_show_json_format() {
+        let command = parse(vec![
+            "skill".to_string(),
+            "show".to_string(),
+            "--root".to_string(),
+            "installed".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+            "team".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Skill(SkillCommand::Show(command)) = command else {
+            panic!("expected skill show command");
+        };
+        assert_eq!(command.root, PathBuf::from("installed"));
+        assert_eq!(command.id, "team");
         assert_eq!(command.format, OutputFormat::Json);
     }
 }

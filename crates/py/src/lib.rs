@@ -366,7 +366,7 @@ mod tests {
         let root = temp_dir("runtime-run");
         let artifact = runtime::SkillArtifact::rust_binary("echo", "Echo", "0.1.0");
         runtime::save_artifact(&root, &artifact).unwrap();
-        let entry = artifact.entry_path(&root);
+        let entry = artifact.entry_path(&root).unwrap();
         fs::create_dir_all(entry.parent().unwrap()).unwrap();
         fs::write(&entry, "#!/bin/sh\ncat\n").unwrap();
         let mut permissions = fs::metadata(&entry).unwrap().permissions();
