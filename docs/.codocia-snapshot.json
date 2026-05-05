@@ -1,15 +1,28 @@
 {
-  "commit": "daee94916377fa78e02fb469f0dd1cf2994d52fe",
+  "commit": "ff5850b63eeeffd066397c13a7accf09f900e006",
   "docs": {
     "docs/guides/examples.md": {
-      "covers": ["examples/skills/*/src/*.rs", "examples/skills/*/skill.py", "python/tests/test_skill_runtime.py", "python/tests/test_package_script.py"],
+      "covers": ["examples/skills/*/SKILL.md", "examples/skills/*/src/*.rs", "examples/skills/*/skill.py", "python/tests/test_skill_runtime.py", "python/tests/test_package_script.py"],
       "files": {
+        "examples/skills/address-pr-feedback/SKILL.md": "b0140cd40b5f2aa8",
+        "examples/skills/cdp-browser/SKILL.md": "5ea54847be891af6",
         "examples/skills/cdp-browser/src/main.rs": "9f62d1252a7e5b7d",
+        "examples/skills/manage-agent/SKILL.md": "bd3453cf5538b429",
+        "examples/skills/manage-chat-session/SKILL.md": "b2320a153b655d0f",
+        "examples/skills/manage-subagent/SKILL.md": "fa25a1d1191ac588",
+        "examples/skills/manage-task/SKILL.md": "9a4a47cec9efa08f",
+        "examples/skills/pr-context-gatherer/SKILL.md": "a7eb25b367d27bed",
+        "examples/skills/python-echo/SKILL.md": "3cb500e284435824",
         "examples/skills/python-echo/skill.py": "cd2c9f4b37a94706",
+        "examples/skills/regex-finder/SKILL.md": "a01399ff6534b605",
         "examples/skills/regex-finder/src/main.rs": "43fb61f625f91f0b",
+        "examples/skills/rust-echo/SKILL.md": "4e5f7b28b35948ea",
         "examples/skills/rust-echo/src/main.rs": "286d1caa96e7f456",
+        "examples/skills/self-heal-ops/SKILL.md": "5f39835a8f3bdf71",
+        "examples/skills/structured-planner/SKILL.md": "ab65f63ba7ddf81b",
+        "examples/skills/team/SKILL.md": "4e8a0ab27f8c0584",
         "python/tests/test_package_script.py": "5b95c60c70b3b846",
-        "python/tests/test_skill_runtime.py": "9bce44325aaafd44"
+        "python/tests/test_skill_runtime.py": "ff230301cadca669"
       }
     },
     "docs/guides/frameworks.md": {
@@ -25,13 +38,13 @@
     "docs/guides/quickstart.md": {
       "covers": ["crates/cli/src/main.rs", "crates/skrun/src/*.rs", "crates/runtime/src/*.rs", "crates/py/src/*.rs", "crates/py/build.rs", "python/skrun/*.py", "python/scripts/*.py", "python/tests/test_core_contract.py", "python/tests/test_package_script.py", "python/tests/test_skill_runtime.py", "scripts/*.sh"],
       "files": {
-        "crates/cli/src/main.rs": "fd17c64ed06225d8",
+        "crates/cli/src/main.rs": "9a8546f52bf9a420",
         "crates/py/build.rs": "c39787386339c64a",
-        "crates/py/src/lib.rs": "1cf7b1c585ef0d71",
-        "crates/runtime/src/lib.rs": "8b2e4d69439ee12a",
+        "crates/py/src/lib.rs": "cfcf91f61cffb173",
+        "crates/runtime/src/lib.rs": "083fb0087ae8b5b2",
         "crates/skrun/src/lib.rs": "7c160ce4e762ede9",
-        "crates/skrun/src/main.rs": "f0b51e9a1fb54092",
-        "crates/skrun/src/runtime.rs": "4f465bb19c8874f6",
+        "crates/skrun/src/main.rs": "7ca6953b81931b33",
+        "crates/skrun/src/runtime.rs": "4ce9758abf164dfe",
         "python/scripts/package.py": "1a51ec600722dd8d",
         "python/skrun/__init__.py": "0dd34328a868c585",
         "python/skrun/agent.py": "725973bee26e516d",
@@ -43,12 +56,12 @@
         "python/skrun/migrate.py": "eb102a1a9b182e3b",
         "python/skrun/model.py": "66cd858418c70362",
         "python/skrun/run.py": "04aaceef5218b674",
-        "python/skrun/skill.py": "2467fcac94d8d392",
+        "python/skrun/skill.py": "76cc8891f9d03579",
         "python/skrun/store.py": "602dfb73d5d1aa0e",
         "python/skrun/tool.py": "5f040e19e47952d3",
         "python/tests/test_core_contract.py": "ecce1887cd77af92",
         "python/tests/test_package_script.py": "5b95c60c70b3b846",
-        "python/tests/test_skill_runtime.py": "9bce44325aaafd44",
+        "python/tests/test_skill_runtime.py": "ff230301cadca669",
         "scripts/check.sh": "07a1c9fc22fe7f53"
       }
     },
@@ -60,7 +73,7 @@
         "crates/bridge/src/lib.rs": "e42f560773e5ee4f",
         "crates/bridge/src/migrate.rs": "c1693c9f71c084d2",
         "crates/chat/src/lib.rs": "1a64559b1af86996",
-        "crates/cli/src/main.rs": "fd17c64ed06225d8",
+        "crates/cli/src/main.rs": "9a8546f52bf9a420",
         "crates/engine/src/command.rs": "adf95c6f19c7da2f",
         "crates/engine/src/lib.rs": "aaf5ae2396b491c4",
         "crates/engine/src/session.rs": "05d94919cf3dc364",
@@ -71,14 +84,14 @@
         "crates/model/src/lib.rs": "c2a82017d6db11da",
         "crates/proto/src/lib.rs": "62c96c0d25a6241b",
         "crates/py/build.rs": "c39787386339c64a",
-        "crates/py/src/lib.rs": "1cf7b1c585ef0d71",
+        "crates/py/src/lib.rs": "cfcf91f61cffb173",
         "crates/run/src/lib.rs": "b55ff1f0b7a3d1e9",
-        "crates/runtime/src/lib.rs": "8b2e4d69439ee12a",
+        "crates/runtime/src/lib.rs": "083fb0087ae8b5b2",
         "crates/server/src/lib.rs": "8b82f0cf54425e16",
         "crates/skill/src/lib.rs": "6a8dfe885b009ae5",
         "crates/skrun/src/lib.rs": "7c160ce4e762ede9",
-        "crates/skrun/src/main.rs": "f0b51e9a1fb54092",
-        "crates/skrun/src/runtime.rs": "4f465bb19c8874f6",
+        "crates/skrun/src/main.rs": "7ca6953b81931b33",
+        "crates/skrun/src/runtime.rs": "4ce9758abf164dfe",
         "crates/store/src/lib.rs": "6ef88adc144a0bb3",
         "crates/tool/src/lib.rs": "36da96d26205b414",
         "python/skrun/__init__.py": "0dd34328a868c585",
@@ -91,7 +104,7 @@
         "python/skrun/migrate.py": "eb102a1a9b182e3b",
         "python/skrun/model.py": "66cd858418c70362",
         "python/skrun/run.py": "04aaceef5218b674",
-        "python/skrun/skill.py": "2467fcac94d8d392",
+        "python/skrun/skill.py": "76cc8891f9d03579",
         "python/skrun/store.py": "602dfb73d5d1aa0e",
         "python/skrun/tool.py": "5f040e19e47952d3"
       }
