@@ -1,6 +1,6 @@
 ---
 title: Examples
-description: Markdown, Rust, and Python skill examples shipped with skrun.
+description: Rust and Python executable skill examples shipped with skrun.
 covers:
   - examples/skills/*/SKILL.md
   - examples/skills/*/src/*.rs
@@ -11,10 +11,9 @@ covers:
 
 # Examples
 
-The skrun repository includes Markdown guidance skills and small executable
-skills under `examples/skills`. Guidance examples can be a `SKILL.md` directory
-without `artifact.json`; executable examples are normal local programs plus
-`artifact.json`, optional schemas, and a strict stdin/stdout JSON entrypoint.
+The skrun repository includes small executable skills under `examples/skills`.
+Each example is a normal local program plus `artifact.json`, `SKILL.md`,
+optional schemas, and a strict stdin/stdout JSON entrypoint.
 
 ## regex-finder
 

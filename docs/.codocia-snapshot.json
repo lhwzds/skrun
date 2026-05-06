@@ -1,26 +1,17 @@
 {
-  "commit": "ff5850b63eeeffd066397c13a7accf09f900e006",
+  "commit": "90d20c1faed3fee847169fbc717513d03a07e612",
   "docs": {
     "docs/guides/examples.md": {
       "covers": ["examples/skills/*/SKILL.md", "examples/skills/*/src/*.rs", "examples/skills/*/skill.py", "python/tests/test_skill_runtime.py", "python/tests/test_package_script.py"],
       "files": {
-        "examples/skills/address-pr-feedback/SKILL.md": "b0140cd40b5f2aa8",
         "examples/skills/cdp-browser/SKILL.md": "5ea54847be891af6",
         "examples/skills/cdp-browser/src/main.rs": "9f62d1252a7e5b7d",
-        "examples/skills/manage-agent/SKILL.md": "bd3453cf5538b429",
-        "examples/skills/manage-chat-session/SKILL.md": "b2320a153b655d0f",
-        "examples/skills/manage-subagent/SKILL.md": "fa25a1d1191ac588",
-        "examples/skills/manage-task/SKILL.md": "9a4a47cec9efa08f",
-        "examples/skills/pr-context-gatherer/SKILL.md": "a7eb25b367d27bed",
         "examples/skills/python-echo/SKILL.md": "3cb500e284435824",
         "examples/skills/python-echo/skill.py": "cd2c9f4b37a94706",
         "examples/skills/regex-finder/SKILL.md": "a01399ff6534b605",
         "examples/skills/regex-finder/src/main.rs": "43fb61f625f91f0b",
         "examples/skills/rust-echo/SKILL.md": "4e5f7b28b35948ea",
         "examples/skills/rust-echo/src/main.rs": "286d1caa96e7f456",
-        "examples/skills/self-heal-ops/SKILL.md": "5f39835a8f3bdf71",
-        "examples/skills/structured-planner/SKILL.md": "ab65f63ba7ddf81b",
-        "examples/skills/team/SKILL.md": "4e8a0ab27f8c0584",
         "python/tests/test_package_script.py": "5b95c60c70b3b846",
         "python/tests/test_skill_runtime.py": "ff230301cadca669"
       }
