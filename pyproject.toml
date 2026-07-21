@@ -33,7 +33,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/lhwzds/skrun"
 Repository = "https://github.com/lhwzds/skrun"
-Documentation = "https://skrun.io"
+Documentation = "https://github.com/lhwzds/skrun/tree/main/docs"
 
 [tool.maturin]
 bindings = "pyo3"
