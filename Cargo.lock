@@ -3,113 +3,16 @@
 version = 4
 
 [[package]]
-name = "agent"
-version = "0.1.1"
-dependencies = [
- "event",
- "model",
- "serde",
- "skill",
- "tool",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "async-trait"
-version = "0.1.89"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "auth"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "model",
- "serde",
- "store",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
-name = "bridge"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "auth",
- "chat",
- "engine",
- "model",
- "proto",
- "run",
- "serde",
- "serde_json",
- "skill",
- "store",
- "tool",
-]
-
-[[package]]
-name = "chat"
-version = "0.1.1"
-dependencies = [
- "agent",
- "anyhow",
- "serde",
- "skill",
- "store",
-]
-
-[[package]]
-name = "cli"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "runtime",
- "serde_json",
-]
-
-[[package]]
-name = "engine"
-version = "0.1.1"
-dependencies = [
- "agent",
- "anyhow",
- "async-trait",
- "auth",
- "chat",
- "event",
- "model",
- "proto",
- "run",
- "serde_json",
- "skill",
- "store",
- "tool",
-]
-
-[[package]]
-name = "event"
-version = "0.1.1"
-dependencies = [
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "heck"
@@ -154,13 +57,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "model"
-version = "0.1.1"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -179,21 +75,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "proto"
-version = "0.1.1"
-dependencies = [
- "auth",
- "chat",
- "event",
- "model",
- "run",
- "serde",
- "serde_json",
- "skill",
- "tool",
 ]
 
 [[package]]
@@ -267,36 +148,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "redb"
-version = "3.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba239c1c1693315d3cc0e601db3b3965543afbf48c41730fdca2f069f510f4a"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "run"
-version = "0.1.1"
-dependencies = [
- "agent",
- "anyhow",
- "chat",
- "serde",
- "skill",
- "store",
-]
-
-[[package]]
-name = "runtime"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -346,27 +197,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "server"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "engine",
- "model",
- "proto",
- "serde_json",
-]
-
-[[package]]
-name = "skill"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "serde",
- "store",
-]
-
-[[package]]
 name = "skrun"
 version = "0.1.1"
 dependencies = [
@@ -380,24 +210,10 @@ name = "skrun-native"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "engine",
- "model",
  "pyo3",
  "pyo3-build-config",
- "runtime",
  "serde_json",
- "server",
-]
-
-[[package]]
-name = "store"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "redb",
- "serde",
- "serde_json",
+ "skrun",
 ]
 
 [[package]]
@@ -416,16 +232,6 @@ name = "target-lexicon"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
-
-[[package]]
-name = "tool"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "unicode-ident"

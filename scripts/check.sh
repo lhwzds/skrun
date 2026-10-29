@@ -76,7 +76,7 @@ Commands:
   python    Run Python contract tests.
   rust      Run skrun-native Rust test and clippy.
   develop   Install the Python/PyO3 package into the venv.
-  smoke     Import the installed package and call the native core.
+  smoke     Import the installed package and run a skill through the native runtime.
   build     Build a wheel into WHEEL_DIR.
   sdist     Build a source distribution into WHEEL_DIR.
 

@@ -2,14 +2,11 @@
 title: Quickstart
 description: Build and run the first executable skill.
 covers:
-  - crates/cli/src/main.rs
   - crates/skrun/src/*.rs
-  - crates/runtime/src/*.rs
   - crates/py/src/*.rs
   - crates/py/build.rs
   - python/skrun/*.py
   - python/scripts/*.py
-  - python/tests/test_core_contract.py
   - python/tests/test_package_script.py
   - python/tests/test_skill_runtime.py
   - scripts/*.sh

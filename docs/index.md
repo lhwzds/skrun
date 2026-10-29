@@ -25,9 +25,9 @@ up ownership of planning, chat, memory, or graph state.
 
 ## Module Map
 
-The important boundary is the executable skill runtime. The Rust workspace
-contains crates for skill metadata, artifact build/run, protocol types, command
-execution, and Python bindings. The Python package mirrors the Rust runtime
+The important boundary is the executable skill runtime. The Rust workspace has
+two crates: `skrun` (artifact scaffold, build, install, run, and the CLI) and
+`skrun-native` (the PyO3 module). The Python package mirrors the Rust runtime
 boundary through PyO3 instead of shipping a separate subprocess fallback.
 
 ## Install

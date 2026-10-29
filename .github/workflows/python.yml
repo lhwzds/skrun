@@ -74,7 +74,7 @@ jobs:
       - name: Run Python contract tests
         run: scripts/check.sh python
 
-      - name: Run Rust checks for native bridge
+      - name: Run Rust checks for native module
         run: scripts/check.sh rust
 
       - name: Install package in editable mode

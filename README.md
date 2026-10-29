@@ -19,21 +19,9 @@ are available from the [GitHub repository](https://github.com/lhwzds/skrun).
 ## Modules
 
 ```text
-agent   agent loop and execution planning
-bridge  legacy migration DTOs and import checks
-skill   skill catalog, mentions, and per-turn capability planning
-tool    tool trait and registry
-runtime executable skill artifacts, scaffold, build, and run
-cli     minimal executable skill commands
-run     Task/Run durable execution model
-chat    sessions, turns, and messages
-engine  core composition and command execution
-proto   CoreCommand, CoreResponse, and CoreSnapshot protocol types
-server  command and JSON ingress for product shells
-store   repository traits and backend contracts
-model   providers, models, selectors, and runtime model specs
-auth    secrets, auth profiles, and provider access policy
-event   stream, trace, and telemetry event types
+crates/skrun  runtime: artifacts, scaffold, build, install, and run; plus the skrun CLI
+crates/py     skrun-native PyO3 module used by the Python package
+python/skrun  Python SDK over skrun-native
 ```
 
 ## Skills
@@ -102,7 +90,7 @@ same Rust `runtime` crate used by the CLI:
 ```python
 import skrun
 
-result = skrun.skill("/path/to/skill").call({"pattern": "TODO", "path": "."})
+result = skrun.skill("/path/to/skill").call({"action": "match", "input": {"pattern": "TODO", "text": "TODO: ship it"}})
 ```
 
 By default, skill IDs resolve under `~/.skrun/skills`, or under the directory
@@ -115,25 +103,25 @@ maintain a separate subprocess runtime fallback.
 The minimal CLI can scaffold guidance or executable skills:
 
 ```bash
-cargo run -p cli -- \
+cargo run -p skrun -- \
   skill new --kind markdown --id team /tmp/team
 
-cargo run -p cli -- \
+cargo run -p skrun -- \
   skill new --kind rust_binary --id rust-echo /tmp/rust-echo
 
-cargo run -p cli -- \
+cargo run -p skrun -- \
   skill build /tmp/rust-echo
 
-cargo run -p cli -- \
+cargo run -p skrun -- \
   skill run --input '{"ok":true}' /tmp/rust-echo
 
-cargo run -p cli -- \
+cargo run -p skrun -- \
   skill install-local --root /tmp/skrun-skills --overwrite /tmp/rust-echo
 
-cargo run -p cli -- \
+cargo run -p skrun -- \
   skill list --root /tmp/skrun-skills --format json
 
-cargo run -p cli -- \
+cargo run -p skrun -- \
   skill show --root /tmp/skrun-skills --format json rust-echo
 ```
 
@@ -167,8 +155,6 @@ LangGraph, PydanticAI, and OpenAI Agents-style tool bodies.
 
 ## Non-Goals For This Slice
 
-- Do not open or migrate production databases.
-- Do not duplicate the current TUI/Web implementation.
 - Do not implement a main agent framework.
 - Do not implement a remote marketplace UI.
 - Do not implement streaming executable skills.
