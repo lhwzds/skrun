@@ -1,103 +1,81 @@
 {
-  "commit": "90d20c1faed3fee847169fbc717513d03a07e612",
+  "schema_version": 1,
+  "hash_algorithm": "sha256",
+  "commit": "b6a4feb181f35616356743ec881a66cb2f461688",
   "docs": {
     "docs/guides/examples.md": {
-      "covers": ["examples/skills/*/SKILL.md", "examples/skills/*/src/*.rs", "examples/skills/*/skill.py", "python/tests/test_skill_runtime.py", "python/tests/test_package_script.py"],
+      "covers": [
+        "examples/skills/*/SKILL.md",
+        "examples/skills/*/src/*.rs",
+        "examples/skills/*/skill.py",
+        "python/tests/test_skill_runtime.py",
+        "python/tests/test_package_script.py"
+      ],
       "files": {
-        "examples/skills/cdp-browser/SKILL.md": "5ea54847be891af6",
-        "examples/skills/cdp-browser/src/main.rs": "9f62d1252a7e5b7d",
-        "examples/skills/python-echo/SKILL.md": "3cb500e284435824",
-        "examples/skills/python-echo/skill.py": "cd2c9f4b37a94706",
-        "examples/skills/regex-finder/SKILL.md": "a01399ff6534b605",
-        "examples/skills/regex-finder/src/main.rs": "43fb61f625f91f0b",
-        "examples/skills/rust-echo/SKILL.md": "4e5f7b28b35948ea",
-        "examples/skills/rust-echo/src/main.rs": "286d1caa96e7f456",
-        "python/tests/test_package_script.py": "5b95c60c70b3b846",
-        "python/tests/test_skill_runtime.py": "ff230301cadca669"
+        "examples/skills/cdp-browser/SKILL.md": "sha256:60952a5ad0817f7abc05b593126ec85d938697b536863e02c0932ea70abb8746",
+        "examples/skills/cdp-browser/src/main.rs": "sha256:adfa3278c654ef4ea566641def609178d5134bdfb8c2b64548c73e3d201806e2",
+        "examples/skills/python-echo/SKILL.md": "sha256:d59f392b537f19fde1db107b6fc22db082a0c48bf0f3aa0ba4ac761e0120a333",
+        "examples/skills/python-echo/skill.py": "sha256:22b92686eca9530b63c456f07c40bc84eb96fb6a5922870896c33c43c6e9eb64",
+        "examples/skills/regex-finder/SKILL.md": "sha256:49885debe13adcf8534875484944c279f1cd53d3a40a7bb04429a62c03c2cb3c",
+        "examples/skills/regex-finder/src/main.rs": "sha256:448743b34c843898d49fd4181d73ee5d0b02dc01779f19366382cdd71a6741b2",
+        "examples/skills/rust-echo/SKILL.md": "sha256:5a6fa047954c069343e432429dd1498f33e4261c4e929b0ac1d3644ee067bad0",
+        "examples/skills/rust-echo/src/main.rs": "sha256:0628dfc62b3a52d29c4174b97a0666b6af88dce86dd651380bc642ff1f3c6a51",
+        "python/tests/test_package_script.py": "sha256:bcd65b55131b0c2df158e73bf16459d99e5203e97189ed055ba5116468a1544e",
+        "python/tests/test_skill_runtime.py": "sha256:9dc27d7d1e86cb0fa9f9229b40ede86de1ea79507c4bbb0469cdc519382a4517"
       }
     },
     "docs/guides/frameworks.md": {
-      "covers": ["examples/frameworks/*.py", "python/tests/test_framework_examples.py"],
+      "covers": [
+        "examples/frameworks/*.py",
+        "python/tests/test_framework_examples.py"
+      ],
       "files": {
-        "examples/frameworks/langchain_tool.py": "de54730e0c5284be",
-        "examples/frameworks/langgraph_node.py": "55dba362f90d949e",
-        "examples/frameworks/openai_agents_tool.py": "85a48c6fa155f2ed",
-        "examples/frameworks/pydantic_ai_tool.py": "9ec33a40d3e42514",
-        "python/tests/test_framework_examples.py": "cf343a5632f67da8"
+        "examples/frameworks/langchain_tool.py": "sha256:f9e18bac3a0fe59b95670608fd428b843311160ab2f162efb14d40b1f589d828",
+        "examples/frameworks/langgraph_node.py": "sha256:aaf9bb40a28ead245c4ff5096d4b5d8407d4795fd8e662a283573a8b608188b3",
+        "examples/frameworks/openai_agents_tool.py": "sha256:8ec949856a3f9f8090644357ac6e05b06c03fa453c635b5b898eff755f3fcd04",
+        "examples/frameworks/pydantic_ai_tool.py": "sha256:a8d6e24cbe3c4b8c0f60c5547a571b74cf23b7b27b41631212c55d84a4232803",
+        "python/tests/test_framework_examples.py": "sha256:81bce6dcad413b854712aa2736845f879eb73f6b5dc4be7fd849d5f7650d33a8"
       }
     },
     "docs/guides/quickstart.md": {
-      "covers": ["crates/cli/src/main.rs", "crates/skrun/src/*.rs", "crates/runtime/src/*.rs", "crates/py/src/*.rs", "crates/py/build.rs", "python/skrun/*.py", "python/scripts/*.py", "python/tests/test_core_contract.py", "python/tests/test_package_script.py", "python/tests/test_skill_runtime.py", "scripts/*.sh"],
+      "covers": [
+        "crates/skrun/src/*.rs",
+        "crates/py/src/*.rs",
+        "crates/py/build.rs",
+        "python/skrun/*.py",
+        "python/scripts/*.py",
+        "python/tests/test_package_script.py",
+        "python/tests/test_skill_runtime.py",
+        "scripts/*.sh"
+      ],
       "files": {
-        "crates/cli/src/main.rs": "9a8546f52bf9a420",
-        "crates/py/build.rs": "c39787386339c64a",
-        "crates/py/src/lib.rs": "cfcf91f61cffb173",
-        "crates/runtime/src/lib.rs": "083fb0087ae8b5b2",
-        "crates/skrun/src/lib.rs": "7c160ce4e762ede9",
-        "crates/skrun/src/main.rs": "7ca6953b81931b33",
-        "crates/skrun/src/runtime.rs": "4ce9758abf164dfe",
-        "python/scripts/package.py": "1a51ec600722dd8d",
-        "python/skrun/__init__.py": "0dd34328a868c585",
-        "python/skrun/agent.py": "725973bee26e516d",
-        "python/skrun/auth.py": "3602c3df1ac580cb",
-        "python/skrun/bridge.py": "cd61f739481fa6bc",
-        "python/skrun/chat.py": "31f026c3aaf2f801",
-        "python/skrun/core.py": "bf6ba86726fe0945",
-        "python/skrun/event.py": "b785d03c0fd7c19e",
-        "python/skrun/migrate.py": "eb102a1a9b182e3b",
-        "python/skrun/model.py": "66cd858418c70362",
-        "python/skrun/run.py": "04aaceef5218b674",
-        "python/skrun/skill.py": "76cc8891f9d03579",
-        "python/skrun/store.py": "602dfb73d5d1aa0e",
-        "python/skrun/tool.py": "5f040e19e47952d3",
-        "python/tests/test_core_contract.py": "ecce1887cd77af92",
-        "python/tests/test_package_script.py": "5b95c60c70b3b846",
-        "python/tests/test_skill_runtime.py": "ff230301cadca669",
-        "scripts/check.sh": "07a1c9fc22fe7f53"
+        "crates/py/build.rs": "sha256:5c20acb2abbf584f7c90ee9751563887bff0f6413e54c5be1b91c371ba28828d",
+        "crates/py/src/lib.rs": "sha256:4be53708f7cafe031ea5bff07106a9e4fafeb2f3a3ca9aa559f4be46e5a069fd",
+        "crates/skrun/src/lib.rs": "sha256:93170ed8468cf441d7365aaee951836cf8da4d8bc902941abd9cf7600b29017b",
+        "crates/skrun/src/main.rs": "sha256:4d09446247a8b553c2e14a4a43804a146b0fcf0051955adbf4333fc131cc46ad",
+        "crates/skrun/src/runtime.rs": "sha256:8832e5d65f13dbe14c289381d412508935d40aa7cfa9124b0f040f55460a0211",
+        "python/scripts/package.py": "sha256:bcd66533ab55f49b5295c490d4a7ab80f374efcfd4604649a70260b868f614b1",
+        "python/skrun/__init__.py": "sha256:a9fa28cde2007898a33c782bba42c3baf89367525c56a4e0f9130704ab0b05fd",
+        "python/skrun/skill.py": "sha256:f0d316a8f0e1f1c08b0da521db0550af244748e426557fb1b63c477b5788d5cf",
+        "python/tests/test_package_script.py": "sha256:bcd65b55131b0c2df158e73bf16459d99e5203e97189ed055ba5116468a1544e",
+        "python/tests/test_skill_runtime.py": "sha256:9dc27d7d1e86cb0fa9f9229b40ede86de1ea79507c4bbb0469cdc519382a4517",
+        "scripts/check.sh": "sha256:c326d5b4f2082407e145724e5078350003c1f5028a7fdfdf117bc421a950af1d"
       }
     },
     "docs/index.md": {
-      "covers": ["crates/*/src/*.rs", "crates/py/build.rs", "python/skrun/*.py"],
+      "covers": [
+        "crates/*/src/*.rs",
+        "crates/py/build.rs",
+        "python/skrun/*.py"
+      ],
       "files": {
-        "crates/agent/src/lib.rs": "41a35b8be6378a86",
-        "crates/auth/src/lib.rs": "90ba1b5e791bfaff",
-        "crates/bridge/src/lib.rs": "e42f560773e5ee4f",
-        "crates/bridge/src/migrate.rs": "c1693c9f71c084d2",
-        "crates/chat/src/lib.rs": "1a64559b1af86996",
-        "crates/cli/src/main.rs": "9a8546f52bf9a420",
-        "crates/engine/src/command.rs": "adf95c6f19c7da2f",
-        "crates/engine/src/lib.rs": "aaf5ae2396b491c4",
-        "crates/engine/src/session.rs": "05d94919cf3dc364",
-        "crates/engine/src/snapshot.rs": "e418f8914c3c451a",
-        "crates/engine/src/task.rs": "78d305e23780a082",
-        "crates/engine/src/tooling.rs": "ae2aff0b5d4f73b2",
-        "crates/event/src/lib.rs": "9b9446b15dfa9ab3",
-        "crates/model/src/lib.rs": "c2a82017d6db11da",
-        "crates/proto/src/lib.rs": "62c96c0d25a6241b",
-        "crates/py/build.rs": "c39787386339c64a",
-        "crates/py/src/lib.rs": "cfcf91f61cffb173",
-        "crates/run/src/lib.rs": "b55ff1f0b7a3d1e9",
-        "crates/runtime/src/lib.rs": "083fb0087ae8b5b2",
-        "crates/server/src/lib.rs": "8b82f0cf54425e16",
-        "crates/skill/src/lib.rs": "6a8dfe885b009ae5",
-        "crates/skrun/src/lib.rs": "7c160ce4e762ede9",
-        "crates/skrun/src/main.rs": "7ca6953b81931b33",
-        "crates/skrun/src/runtime.rs": "4ce9758abf164dfe",
-        "crates/store/src/lib.rs": "6ef88adc144a0bb3",
-        "crates/tool/src/lib.rs": "36da96d26205b414",
-        "python/skrun/__init__.py": "0dd34328a868c585",
-        "python/skrun/agent.py": "725973bee26e516d",
-        "python/skrun/auth.py": "3602c3df1ac580cb",
-        "python/skrun/bridge.py": "cd61f739481fa6bc",
-        "python/skrun/chat.py": "31f026c3aaf2f801",
-        "python/skrun/core.py": "bf6ba86726fe0945",
-        "python/skrun/event.py": "b785d03c0fd7c19e",
-        "python/skrun/migrate.py": "eb102a1a9b182e3b",
-        "python/skrun/model.py": "66cd858418c70362",
-        "python/skrun/run.py": "04aaceef5218b674",
-        "python/skrun/skill.py": "76cc8891f9d03579",
-        "python/skrun/store.py": "602dfb73d5d1aa0e",
-        "python/skrun/tool.py": "5f040e19e47952d3"
+        "crates/py/build.rs": "sha256:5c20acb2abbf584f7c90ee9751563887bff0f6413e54c5be1b91c371ba28828d",
+        "crates/py/src/lib.rs": "sha256:4be53708f7cafe031ea5bff07106a9e4fafeb2f3a3ca9aa559f4be46e5a069fd",
+        "crates/skrun/src/lib.rs": "sha256:93170ed8468cf441d7365aaee951836cf8da4d8bc902941abd9cf7600b29017b",
+        "crates/skrun/src/main.rs": "sha256:4d09446247a8b553c2e14a4a43804a146b0fcf0051955adbf4333fc131cc46ad",
+        "crates/skrun/src/runtime.rs": "sha256:8832e5d65f13dbe14c289381d412508935d40aa7cfa9124b0f040f55460a0211",
+        "python/skrun/__init__.py": "sha256:a9fa28cde2007898a33c782bba42c3baf89367525c56a4e0f9130704ab0b05fd",
+        "python/skrun/skill.py": "sha256:f0d316a8f0e1f1c08b0da521db0550af244748e426557fb1b63c477b5788d5cf"
       }
     }
   }
