@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "hash_algorithm": "sha256",
-  "commit": "b6a4feb181f35616356743ec881a66cb2f461688",
+  "commit": "3e5ebadb413441d60c5b8117210d82b87a3b8db9",
   "docs": {
     "docs/guides/examples.md": {
       "covers": [
@@ -53,7 +53,7 @@
         "crates/py/src/lib.rs": "sha256:4be53708f7cafe031ea5bff07106a9e4fafeb2f3a3ca9aa559f4be46e5a069fd",
         "crates/skrun/src/lib.rs": "sha256:93170ed8468cf441d7365aaee951836cf8da4d8bc902941abd9cf7600b29017b",
         "crates/skrun/src/main.rs": "sha256:4d09446247a8b553c2e14a4a43804a146b0fcf0051955adbf4333fc131cc46ad",
-        "crates/skrun/src/runtime.rs": "sha256:8832e5d65f13dbe14c289381d412508935d40aa7cfa9124b0f040f55460a0211",
+        "crates/skrun/src/runtime.rs": "sha256:b1d536ac72e2c65d9e3e6bf901f34ac55988667374b3e5e997d584d36c81a4bc",
         "python/scripts/package.py": "sha256:bcd66533ab55f49b5295c490d4a7ab80f374efcfd4604649a70260b868f614b1",
         "python/skrun/__init__.py": "sha256:a9fa28cde2007898a33c782bba42c3baf89367525c56a4e0f9130704ab0b05fd",
         "python/skrun/skill.py": "sha256:f0d316a8f0e1f1c08b0da521db0550af244748e426557fb1b63c477b5788d5cf",
@@ -73,7 +73,7 @@
         "crates/py/src/lib.rs": "sha256:4be53708f7cafe031ea5bff07106a9e4fafeb2f3a3ca9aa559f4be46e5a069fd",
         "crates/skrun/src/lib.rs": "sha256:93170ed8468cf441d7365aaee951836cf8da4d8bc902941abd9cf7600b29017b",
         "crates/skrun/src/main.rs": "sha256:4d09446247a8b553c2e14a4a43804a146b0fcf0051955adbf4333fc131cc46ad",
-        "crates/skrun/src/runtime.rs": "sha256:8832e5d65f13dbe14c289381d412508935d40aa7cfa9124b0f040f55460a0211",
+        "crates/skrun/src/runtime.rs": "sha256:b1d536ac72e2c65d9e3e6bf901f34ac55988667374b3e5e997d584d36c81a4bc",
         "python/skrun/__init__.py": "sha256:a9fa28cde2007898a33c782bba42c3baf89367525c56a4e0f9130704ab0b05fd",
         "python/skrun/skill.py": "sha256:f0d316a8f0e1f1c08b0da521db0550af244748e426557fb1b63c477b5788d5cf"
       }

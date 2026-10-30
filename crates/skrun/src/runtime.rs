@@ -767,8 +767,22 @@ pub fn install_local_skill(
         fs::remove_dir_all(&target).with_context(|| format!("remove {}", target.display()))?;
     }
 
-    copy_dir_all(source, &target)
-        .with_context(|| format!("install skill into {}", target.display()))?;
+    let entry_path = artifact
+        .entry
+        .as_ref()
+        .map(|_| artifact.entry_path(source))
+        .transpose()?;
+    copy_dir_filtered(source, &target, &|path| {
+        let excluded = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, ".venv" | "__pycache__" | "target" | ".git"));
+        excluded
+            && !entry_path
+                .as_ref()
+                .is_some_and(|entry| entry.starts_with(path))
+    })
+    .with_context(|| format!("install skill into {}", target.display()))?;
     load_artifact(&target)
 }
 
@@ -1068,14 +1082,17 @@ fn same_path(left: &Path, right: &Path) -> Result<bool> {
     Ok(fs::canonicalize(left)? == fs::canonicalize(right)?)
 }
 
-fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
+fn copy_dir_filtered(source: &Path, target: &Path, skip: &dyn Fn(&Path) -> bool) -> Result<()> {
     fs::create_dir_all(target).with_context(|| format!("create {}", target.display()))?;
     for item in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
         let item = item?;
         let path = item.path();
         let target_path = target.join(item.file_name());
         if path.is_dir() {
-            copy_dir_all(&path, &target_path)?;
+            if skip(&path) {
+                continue;
+            }
+            copy_dir_filtered(&path, &target_path, skip)?;
         } else {
             fs::copy(&path, &target_path)
                 .with_context(|| format!("copy {} to {}", path.display(), target_path.display()))?;
@@ -1206,6 +1223,68 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "py-echo");
         assert!(target.join("py-echo").join("artifact.json").is_file());
+    }
+
+    #[test]
+    fn install_local_skill_skips_venv_and_caches() {
+        let source = temp_dir("install-filtered-source");
+        let target = temp_dir("install-filtered-target");
+        let artifact = scaffold_skill(
+            &source,
+            ScaffoldOptions::python_uv("filtered", "Filtered", "0.1.0"),
+        )
+        .unwrap();
+        for relative in [
+            ".venv/bin/python",
+            "__pycache__/x.pyc",
+            "target/debug/x",
+            "sub/__pycache__/y.pyc",
+        ] {
+            let path = source.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "cached").unwrap();
+        }
+
+        install_local_skill(&source, &InstallOptions::new(&target)).unwrap();
+        let installed = target.join("filtered");
+
+        for relative in [
+            ".venv/bin/python",
+            "__pycache__/x.pyc",
+            "target/debug/x",
+            "sub/__pycache__/y.pyc",
+        ] {
+            assert!(!installed.join(relative).exists());
+        }
+        assert!(installed.join("artifact.json").is_file());
+        assert!(installed.join("pyproject.toml").is_file());
+        assert!(
+            installed
+                .join(
+                    artifact
+                        .entry_path(&source)
+                        .unwrap()
+                        .strip_prefix(&source)
+                        .unwrap()
+                )
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn install_local_skill_keeps_entry_under_excluded_name() {
+        let source = temp_dir("install-entry-target-source");
+        let target = temp_dir("install-entry-target-dest");
+        let mut artifact = SkillArtifact::rust_binary("kept", "Kept", "0.1.0");
+        artifact.entry = Some("target/release/kept".to_string());
+        save_artifact(&source, &artifact).unwrap();
+        let entry = artifact.entry_path(&source).unwrap();
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, "binary").unwrap();
+
+        install_local_skill(&source, &InstallOptions::new(&target)).unwrap();
+
+        assert!(target.join("kept/target/release/kept").is_file());
     }
 
     #[test]
