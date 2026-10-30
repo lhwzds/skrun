@@ -37,7 +37,7 @@ sequenceDiagram
 
 工作目录就是 skill 目录，所以 skill 可以用相对路径打开自己的文件。写入一个值后就关闭 stdin，skill 因此只需一直读到 EOF。stderr 会被捕获并作为诊断信息返回，从不解析。
 
-<sub>来源: [runtime.rs:675-717](../../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:998-1058](../../crates/skrun/src/runtime.rs#L998-L1058)</sub>
+<sub>来源: [runtime.rs:675-717](../../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:1006-1066](../../crates/skrun/src/runtime.rs#L1006-L1066)</sub>
 
 ## 哪些情况算失败
 
@@ -47,17 +47,17 @@ sequenceDiagram
 
 stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根据代码推断：skill 如果在退出前写入的数据超过操作系统管道缓冲区，会一直阻塞到超时。稳妥起见，保持输出较小，或把大结果写到文件里再返回文件路径。
 
-<sub>来源: [runtime.rs:1019-1058](../../crates/skrun/src/runtime.rs#L1019-L1058) · [main.rs:27-35](../../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
+<sub>来源: [runtime.rs:1027-1066](../../crates/skrun/src/runtime.rs#L1027-L1066) · [main.rs:27-35](../../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
 
 ## 构建
 
-`rust_binary`：运行 `cargo build --manifest-path <dir>/Cargo.toml --target-dir <target>`，profile 为 `release` 时加 `--release`，否则加 `--profile <name>`，然后把 `<target>/<profile>/<id>`（加上平台的可执行文件后缀）复制到 `entry`。因此二进制名必须与 skill id 相同。无论 profile 是什么都会复制到 `entry`，所以使用脚手架生成的 entry 时，debug 构建的产物也会落在 `bin/release/...`。
+`rust_binary`：运行 `cargo build --manifest-path <dir>/Cargo.toml --target-dir <target>`，profile 为 `release` 时加 `--release`，否则加 `--profile <name>`，然后把 `<target>/<dir>/<id>`（加上平台的可执行文件后缀）复制到 `entry`。其中 `<dir>` 是 Cargo 的输出目录：`dev` 和 `test` 为 `debug`，`release` 和 `bench` 为 `release`，其他情况为 profile 名。因此二进制名必须与 skill id 相同。无论 profile 是什么都会复制到 `entry`，所以使用脚手架生成的 entry 时，debug 构建的产物也会落在 `bin/release/...`。
 
 `python_uv`：仅在缺少 `uv.lock` 时运行 `uv lock --project <dir>`，然后运行 `uv sync --project <dir> --locked`。锁文件是 skill 的一部分，因此安装可复现。
 
 两种构建步骤都会捕获输出，失败时只报告 stderr。`markdown` skill 无法构建。
 
-<sub>来源: [runtime.rs:661-673](../../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-996](../../crates/skrun/src/runtime.rs#L946-L996) · [runtime.rs:1060-1072](../../crates/skrun/src/runtime.rs#L1060-L1072)</sub>
+<sub>来源: [runtime.rs:661-673](../../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-992](../../crates/skrun/src/runtime.rs#L946-L992) · [runtime.rs:1068-1080](../../crates/skrun/src/runtime.rs#L1068-L1080)</sub>
 
 ## 安装与列出
 
@@ -65,7 +65,7 @@ stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根�
 
 `list_installed_skills` 扫描根目录下直接包含 `artifact.json` 或 `SKILL.md` 的子目录，静默跳过加载失败的目录，并按 id 排序。根目录不存在时返回空列表。如果某个 skill 没出现在列表中，可以用 `skill show <id>` 查看它的加载错误。
 
-<sub>来源: [runtime.rs:727-787](../../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1085-1102](../../crates/skrun/src/runtime.rs#L1085-L1102) · [runtime.rs:760-766](../../crates/skrun/src/runtime.rs#L760-L766)</sub>
+<sub>来源: [runtime.rs:727-787](../../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1093-1110](../../crates/skrun/src/runtime.rs#L1093-L1110) · [runtime.rs:760-766](../../crates/skrun/src/runtime.rs#L760-L766)</sub>
 
 ## Python 边界
 

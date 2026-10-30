@@ -91,7 +91,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 For Python, use `--kind python_uv`: the scaffold is a `pyproject.toml` plus an echoing `skill.py`, and `build` runs `uv lock`/`uv sync`.
 
-<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:946-984](../crates/skrun/src/runtime.rs#L946-L984) · [main.rs:73-81](../crates/skrun/src/main.rs#L73-L81)</sub>
+<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:73-81](../crates/skrun/src/main.rs#L73-L81)</sub>
 
 ### Install it and call it from Python
 
@@ -180,7 +180,7 @@ The CLI computes this default eagerly (`root.unwrap_or(default_skills_dir()?)`),
 
 `build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so by default skill builds write no Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
 
-<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:946-951](../crates/skrun/src/runtime.rs#L946-L951) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
 
 ### artifact.json
 
@@ -274,7 +274,7 @@ sequenceDiagram
 
 The working directory is the skill directory, so a skill can open its own files by relative path. Closing stdin after one value is what lets a skill simply read to EOF. Stderr is captured and returned as diagnostics, never parsed.
 
-<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:998-1058](../crates/skrun/src/runtime.rs#L998-L1058)</sub>
+<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:1006-1066](../crates/skrun/src/runtime.rs#L1006-L1066)</sub>
 
 ### What counts as failure
 
@@ -284,17 +284,17 @@ The working directory is the skill directory, so a skill can open its own files 
 
 Stdout and stderr are only collected after the process exits. Untested, from reading the code: a skill that writes more than the OS pipe buffer before exiting would block until the timeout. To be safe, keep outputs small or write large results to a file and return its path.
 
-<sub>Sources: [runtime.rs:1019-1058](../crates/skrun/src/runtime.rs#L1019-L1058) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
+<sub>Sources: [runtime.rs:1027-1066](../crates/skrun/src/runtime.rs#L1027-L1066) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
 
 ### Builds
 
-`rust_binary`: run `cargo build --manifest-path <dir>/Cargo.toml --target-dir <target>` with `--release` when the profile is `release`, otherwise `--profile <name>`, then copy `<target>/<profile>/<id>` (plus the platform exe suffix) to `entry`. The binary name must therefore equal the skill id. The copy goes to `entry` whatever the profile, so a debug build still lands in `bin/release/...` with the scaffolded entry.
+`rust_binary`: run `cargo build --manifest-path <dir>/Cargo.toml --target-dir <target>` with `--release` when the profile is `release`, otherwise `--profile <name>`, then copy `<target>/<dir>/<id>` (plus the platform exe suffix) to `entry`, where `<dir>` is Cargo's output directory: `debug` for `dev` and `test`, `release` for `release` and `bench`, otherwise the profile name. The binary name must therefore equal the skill id. The copy goes to `entry` whatever the profile, so a debug build still lands in `bin/release/...` with the scaffolded entry.
 
 `python_uv`: run `uv lock --project <dir>` only when `uv.lock` is missing, then `uv sync --project <dir> --locked`. The lock file is part of the skill, so installs are reproducible.
 
 Both build steps capture output and report only stderr on failure. `markdown` skills cannot be built.
 
-<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-996](../crates/skrun/src/runtime.rs#L946-L996) · [runtime.rs:1060-1072](../crates/skrun/src/runtime.rs#L1060-L1072)</sub>
+<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-992](../crates/skrun/src/runtime.rs#L946-L992) · [runtime.rs:1068-1080](../crates/skrun/src/runtime.rs#L1068-L1080)</sub>
 
 ### Install and list
 
@@ -302,7 +302,7 @@ Both build steps capture output and report only stderr on failure. `markdown` sk
 
 `list_installed_skills` scans the root's direct subdirectories that hold `artifact.json` or `SKILL.md`, silently skips those that fail to load, and sorts by id. A missing root lists as empty. Use `skill show <id>` to see the load error for a skill that is missing from the list.
 
-<sub>Sources: [runtime.rs:727-787](../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1085-1102](../crates/skrun/src/runtime.rs#L1085-L1102) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
+<sub>Sources: [runtime.rs:727-787](../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1093-1110](../crates/skrun/src/runtime.rs#L1093-L1110) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
 
 ### The Python boundary
 
@@ -364,7 +364,7 @@ The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must 
 
 Generated by Codocia from the code on every build: areas, each area's own description, import dependencies between areas, and the pages that explain them.
 
-In scope: 50 files, 4,377 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
+In scope: 50 files, 4,394 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
 
 ### Files
 
@@ -391,7 +391,7 @@ In scope: 50 files, 4,377 lines; excluded `docs/**`, `python/tests/**`, `**/test
 
 - (files) — 19 lines, 1 file. Public API for the skrun executable skill runtime.\
   Explained in: [Getting Started](#getting-started) (1)
-- `src/` — 2,013 lines, 3 files. Public API for the skrun executable skill runtime.\
+- `src/` — 2,030 lines, 3 files. Public API for the skrun executable skill runtime.\
   Hub files: `lib.rs` `runtime.rs` `main.rs`\
   Explained in: [Overview](#overview) (3), [Getting Started](#getting-started) (3), [Reference](#reference) (6), [How It Works](#how-it-works) (6), [Contributing](#contributing) (1)
 

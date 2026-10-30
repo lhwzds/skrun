@@ -38,7 +38,7 @@ The CLI computes this default eagerly (`root.unwrap_or(default_skills_dir()?)`),
 
 `build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so by default skill builds write no Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
 
-<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:946-951](../crates/skrun/src/runtime.rs#L946-L951) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
 
 ## artifact.json
 

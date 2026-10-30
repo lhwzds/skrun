@@ -37,7 +37,7 @@ sequenceDiagram
 
 The working directory is the skill directory, so a skill can open its own files by relative path. Closing stdin after one value is what lets a skill simply read to EOF. Stderr is captured and returned as diagnostics, never parsed.
 
-<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:998-1058](../crates/skrun/src/runtime.rs#L998-L1058)</sub>
+<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:1006-1066](../crates/skrun/src/runtime.rs#L1006-L1066)</sub>
 
 ## What counts as failure
 
@@ -47,17 +47,17 @@ The working directory is the skill directory, so a skill can open its own files 
 
 Stdout and stderr are only collected after the process exits. Untested, from reading the code: a skill that writes more than the OS pipe buffer before exiting would block until the timeout. To be safe, keep outputs small or write large results to a file and return its path.
 
-<sub>Sources: [runtime.rs:1019-1058](../crates/skrun/src/runtime.rs#L1019-L1058) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
+<sub>Sources: [runtime.rs:1027-1066](../crates/skrun/src/runtime.rs#L1027-L1066) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
 
 ## Builds
 
-`rust_binary`: run `cargo build --manifest-path <dir>/Cargo.toml --target-dir <target>` with `--release` when the profile is `release`, otherwise `--profile <name>`, then copy `<target>/<profile>/<id>` (plus the platform exe suffix) to `entry`. The binary name must therefore equal the skill id. The copy goes to `entry` whatever the profile, so a debug build still lands in `bin/release/...` with the scaffolded entry.
+`rust_binary`: run `cargo build --manifest-path <dir>/Cargo.toml --target-dir <target>` with `--release` when the profile is `release`, otherwise `--profile <name>`, then copy `<target>/<dir>/<id>` (plus the platform exe suffix) to `entry`, where `<dir>` is Cargo's output directory: `debug` for `dev` and `test`, `release` for `release` and `bench`, otherwise the profile name. The binary name must therefore equal the skill id. The copy goes to `entry` whatever the profile, so a debug build still lands in `bin/release/...` with the scaffolded entry.
 
 `python_uv`: run `uv lock --project <dir>` only when `uv.lock` is missing, then `uv sync --project <dir> --locked`. The lock file is part of the skill, so installs are reproducible.
 
 Both build steps capture output and report only stderr on failure. `markdown` skills cannot be built.
 
-<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-996](../crates/skrun/src/runtime.rs#L946-L996) · [runtime.rs:1060-1072](../crates/skrun/src/runtime.rs#L1060-L1072)</sub>
+<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-992](../crates/skrun/src/runtime.rs#L946-L992) · [runtime.rs:1068-1080](../crates/skrun/src/runtime.rs#L1068-L1080)</sub>
 
 ## Install and list
 
@@ -65,7 +65,7 @@ Both build steps capture output and report only stderr on failure. `markdown` sk
 
 `list_installed_skills` scans the root's direct subdirectories that hold `artifact.json` or `SKILL.md`, silently skips those that fail to load, and sorts by id. A missing root lists as empty. Use `skill show <id>` to see the load error for a skill that is missing from the list.
 
-<sub>Sources: [runtime.rs:727-787](../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1085-1102](../crates/skrun/src/runtime.rs#L1085-L1102) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
+<sub>Sources: [runtime.rs:727-787](../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1093-1110](../crates/skrun/src/runtime.rs#L1093-L1110) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
 
 ## The Python boundary
 
