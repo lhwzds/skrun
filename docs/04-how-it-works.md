@@ -43,7 +43,7 @@ The working directory is the skill directory, so a skill can open its own files 
 
 - **Timeout**: after `timeout` (60 s by default) the process is killed and the call fails with `skill process timed out after Ns`.
 - **Non-zero exit**: the call fails with the exit code and trimmed stderr. Stdout is discarded, so a skill that prints a structured error body and exits 1 (as `regex-finder` does) loses that body; put the message on stderr too, or exit 0 with `"ok": false`.
-- **Bad output**: stdout must be exactly one JSON value and it must be an object; arrays, scalars or several lines of JSON are errors.
+- **Bad output**: stdout must be exactly one JSON value and it must be an object; arrays, scalars or several JSON values are errors (one object spread over many lines is fine).
 
 Stdout and stderr are only collected after the process exits. Untested, from reading the code: a skill that writes more than the OS pipe buffer before exiting would block until the timeout. To be safe, keep outputs small or write large results to a file and return its path.
 

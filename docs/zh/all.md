@@ -178,7 +178,7 @@ CLI、环境变量、文件格式和 Python API 的准确名称，均摘自代�
 
 CLI 会提前计算这个默认值（`root.unwrap_or(default_skills_dir()?)`），所以两个变量都未设置时，即使传了 `--root`，`run --id`、`install-local`、`list` 和 `show` 也会以 `HOME is not set` 失败。
 
-`build` 构建 `rust_binary` 时，除非指定 `--target-dir`，否则使用 `<system temp dir>/skrun-skill-targets/<id>` 作为 Cargo 的 target 目录，因此 skill 构建永远不会在 skill 目录中写入 Cargo target 目录。Python SDK 自行解析同样的根目录（会展开 `~`），设置了 `root=` 参数时则直接传递该参数。
+`build` 构建 `rust_binary` 时，除非指定 `--target-dir`，否则使用 `<system temp dir>/skrun-skill-targets/<id>` 作为 Cargo 的 target 目录，因此默认情况下，skill 构建不会在 skill 目录中写入 Cargo target 目录。Python SDK 自行解析同样的根目录（会展开 `~`），设置了 `root=` 参数时则直接传递该参数。
 
 <sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:946-951](../../crates/skrun/src/runtime.rs#L946-L951) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../../crates/skrun/src/main.rs#L300-L308) · +3</sub>
 
@@ -280,7 +280,7 @@ sequenceDiagram
 
 - **超时**：超过 `timeout`（默认 60 秒）后进程会被杀掉，调用以 `skill process timed out after Ns` 失败。
 - **非零退出**：调用失败，并带上退出码和去掉首尾空白的 stderr。stdout 会被丢弃，所以如果 skill 打印结构化错误内容后以 1 退出（`regex-finder` 就是这样），这些内容会丢失；请同时把消息写到 stderr，或者以 0 退出并返回 `"ok": false`。
-- **输出不合法**：stdout 必须恰好是一个 JSON 值，而且必须是对象；数组、标量或多行 JSON 都会报错。
+- **输出不合法**：stdout 必须恰好是一个 JSON 值，而且必须是对象；数组、标量或多个 JSON 值都会报错（一个对象分成多行写是可以的）。
 
 stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根据代码推断：skill 如果在退出前写入的数据超过操作系统管道缓冲区，会一直阻塞到超时。稳妥起见，保持输出较小，或把大结果写到文件里再返回文件路径。
 

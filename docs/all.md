@@ -178,7 +178,7 @@ All commands live under `skrun skill`. Positional `<dir>` / `<id>` may appear an
 
 The CLI computes this default eagerly (`root.unwrap_or(default_skills_dir()?)`), so with neither variable set, `run --id`, `install-local`, `list` and `show` fail with `HOME is not set` even when `--root` is given.
 
-`build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so skill builds never write a Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
+`build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so by default skill builds write no Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
 
 <sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:946-951](../crates/skrun/src/runtime.rs#L946-L951) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
 
@@ -280,7 +280,7 @@ The working directory is the skill directory, so a skill can open its own files 
 
 - **Timeout**: after `timeout` (60 s by default) the process is killed and the call fails with `skill process timed out after Ns`.
 - **Non-zero exit**: the call fails with the exit code and trimmed stderr. Stdout is discarded, so a skill that prints a structured error body and exits 1 (as `regex-finder` does) loses that body; put the message on stderr too, or exit 0 with `"ok": false`.
-- **Bad output**: stdout must be exactly one JSON value and it must be an object; arrays, scalars or several lines of JSON are errors.
+- **Bad output**: stdout must be exactly one JSON value and it must be an object; arrays, scalars or several JSON values are errors (one object spread over many lines is fine).
 
 Stdout and stderr are only collected after the process exits. Untested, from reading the code: a skill that writes more than the OS pipe buffer before exiting would block until the timeout. To be safe, keep outputs small or write large results to a file and return its path.
 
