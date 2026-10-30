@@ -943,6 +943,14 @@ fn write_skill_markdown(root: &Path, artifact: &SkillArtifact) -> Result<()> {
     Ok(())
 }
 
+fn profile_output_dir(profile: &str) -> &str {
+    match profile {
+        "dev" | "test" => "debug",
+        "release" | "bench" => "release",
+        profile => profile,
+    }
+}
+
 fn build_rust_binary(root: &Path, artifact: &SkillArtifact, options: &BuildOptions) -> Result<()> {
     let target_dir = options.target_dir.clone().unwrap_or_else(|| {
         std::env::temp_dir()
@@ -965,7 +973,7 @@ fn build_rust_binary(root: &Path, artifact: &SkillArtifact, options: &BuildOptio
     run_status_command(&mut command, "build rust binary skill")?;
 
     let built_binary = target_dir
-        .join(&options.profile)
+        .join(profile_output_dir(&options.profile))
         .join(executable_file_name(&artifact.id));
     let entry_path = artifact.entry_path(root)?;
     let entry_parent = entry_path
@@ -1105,6 +1113,15 @@ fn copy_dir_filtered(source: &Path, target: &Path, skip: &dyn Fn(&Path) -> bool)
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn profile_output_dir_matches_cargo() {
+        assert_eq!(profile_output_dir("dev"), "debug");
+        assert_eq!(profile_output_dir("test"), "debug");
+        assert_eq!(profile_output_dir("release"), "release");
+        assert_eq!(profile_output_dir("bench"), "release");
+        assert_eq!(profile_output_dir("my-prof"), "my-prof");
+    }
 
     #[test]
     fn artifact_rejects_unsafe_paths() {
