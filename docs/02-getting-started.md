@@ -37,7 +37,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 For Python, use `--kind python_uv`: the scaffold is a `pyproject.toml` plus an echoing `skill.py`, and `build` runs `uv lock`/`uv sync`.
 
-<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:814-852](../crates/skrun/src/runtime.rs#L814-L852) · [runtime.rs:932-970](../crates/skrun/src/runtime.rs#L932-L970) · [main.rs:73-81](../crates/skrun/src/main.rs#L73-L81)</sub>
+<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:946-984](../crates/skrun/src/runtime.rs#L946-L984) · [main.rs:73-81](../crates/skrun/src/main.rs#L73-L81)</sub>
 
 ## Install it and call it from Python
 

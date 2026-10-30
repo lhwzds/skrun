@@ -18,6 +18,6 @@ title: skrun
 
 ## 附录
 
-- [代码结构](structure.md) — 由 Codocia 从代码生成：功能区、依赖、讲解页
+- [代码结构](structure.md) — 从代码生成：功能区、依赖、讲解页
 
-<sub>生成自 https://github.com/lhwzds/skrun @ `d0ad0266f7`</sub>
+<sub>生成自 https://github.com/lhwzds/skrun @ `b6a4feb181`</sub>

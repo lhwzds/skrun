@@ -37,7 +37,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 Python 则使用 `--kind python_uv`：脚手架是一个 `pyproject.toml` 加一个回显输入的 `skill.py`，`build` 会运行 `uv lock`/`uv sync`。
 
-<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:814-852](../../crates/skrun/src/runtime.rs#L814-L852) · [runtime.rs:932-970](../../crates/skrun/src/runtime.rs#L932-L970) · [main.rs:73-81](../../crates/skrun/src/main.rs#L73-L81)</sub>
+<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:946-984](../../crates/skrun/src/runtime.rs#L946-L984) · [main.rs:73-81](../../crates/skrun/src/main.rs#L73-L81)</sub>
 
 ## 安装 skill 并从 Python 调用
 

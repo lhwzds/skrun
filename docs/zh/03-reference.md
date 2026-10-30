@@ -38,7 +38,7 @@ CLI 会提前计算这个默认值（`root.unwrap_or(default_skills_dir()?)`）�
 
 `build` 构建 `rust_binary` 时，除非指定 `--target-dir`，否则使用 `<system temp dir>/skrun-skill-targets/<id>` 作为 Cargo 的 target 目录，因此 skill 构建永远不会在 skill 目录中写入 Cargo target 目录。Python SDK 自行解析同样的根目录（会展开 `~`），设置了 `root=` 参数时则直接传递该参数。
 
-<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:932-937](../../crates/skrun/src/runtime.rs#L932-L937) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:946-951](../../crates/skrun/src/runtime.rs#L946-L951) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../../crates/skrun/src/main.rs#L300-L308) · +3</sub>
 
 ## artifact.json
 
@@ -78,7 +78,7 @@ id 不能为空，只能包含 ASCII 字母、数字、`-` 和 `_`，并且必�
 
 对于可执行类型（`rust_binary`、`python_uv`），`entry`、`schema.input` 和 `schema.output` 必须是非空的相对路径，且不能包含 `..` 或根路径成分：清单无法指向自身目录之外。`markdown` 制品的 `schema.*` 路径不做检查。
 
-<sub>来源: [runtime.rs:775-812](../../crates/skrun/src/runtime.rs#L775-L812) · [runtime.rs:206-241](../../crates/skrun/src/runtime.rs#L206-L241)</sub>
+<sub>来源: [runtime.rs:789-826](../../crates/skrun/src/runtime.rs#L789-L826) · [runtime.rs:206-241](../../crates/skrun/src/runtime.rs#L206-L241)</sub>
 
 ## Python API
 

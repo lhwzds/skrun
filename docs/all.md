@@ -91,7 +91,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 For Python, use `--kind python_uv`: the scaffold is a `pyproject.toml` plus an echoing `skill.py`, and `build` runs `uv lock`/`uv sync`.
 
-<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:814-852](../crates/skrun/src/runtime.rs#L814-L852) · [runtime.rs:932-970](../crates/skrun/src/runtime.rs#L932-L970) · [main.rs:73-81](../crates/skrun/src/main.rs#L73-L81)</sub>
+<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:946-984](../crates/skrun/src/runtime.rs#L946-L984) · [main.rs:73-81](../crates/skrun/src/main.rs#L73-L81)</sub>
 
 ### Install it and call it from Python
 
@@ -180,7 +180,7 @@ The CLI computes this default eagerly (`root.unwrap_or(default_skills_dir()?)`),
 
 `build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so skill builds never write a Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
 
-<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:932-937](../crates/skrun/src/runtime.rs#L932-L937) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:946-951](../crates/skrun/src/runtime.rs#L946-L951) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
 
 ### artifact.json
 
@@ -220,7 +220,7 @@ An id must be non-empty, contain only ASCII letters, digits, `-` and `_`, and st
 
 For the executable kinds (`rust_binary`, `python_uv`), `entry`, `schema.input` and `schema.output` must be non-empty relative paths with no `..` or root components: a manifest cannot point outside its own directory. A `markdown` artifact's `schema.*` paths are not checked.
 
-<sub>Sources: [runtime.rs:775-812](../crates/skrun/src/runtime.rs#L775-L812) · [runtime.rs:206-241](../crates/skrun/src/runtime.rs#L206-L241)</sub>
+<sub>Sources: [runtime.rs:789-826](../crates/skrun/src/runtime.rs#L789-L826) · [runtime.rs:206-241](../crates/skrun/src/runtime.rs#L206-L241)</sub>
 
 ### Python API
 
@@ -243,7 +243,7 @@ Known issue: `install_local` returns `self.skill(artifact.id)`. When `skill_id=`
 
 ## How It Works
 
-Every operation starts the same way: `load_artifact` reads the skill directory into a validated `SkillArtifact`. `build_skill` and `run_skill` then dispatch on its `kind`; `install_local_skill` copies the directory. There is no daemon, cache or registry; the filesystem is the only state.
+Every operation starts the same way: `load_artifact` reads the skill directory into a validated `SkillArtifact`. `build_skill` and `run_skill` then dispatch on its `kind`; `install_local_skill` copies the directory, skipping `.venv` and build caches. There is no daemon, cache or registry; the filesystem is the only state.
 
 <sub>Sources: [runtime.rs:594-609](../crates/skrun/src/runtime.rs#L594-L609)</sub>
 
@@ -274,7 +274,7 @@ sequenceDiagram
 
 The working directory is the skill directory, so a skill can open its own files by relative path. Closing stdin after one value is what lets a skill simply read to EOF. Stderr is captured and returned as diagnostics, never parsed.
 
-<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:984-1044](../crates/skrun/src/runtime.rs#L984-L1044)</sub>
+<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:998-1058](../crates/skrun/src/runtime.rs#L998-L1058)</sub>
 
 ### What counts as failure
 
@@ -284,7 +284,7 @@ The working directory is the skill directory, so a skill can open its own files 
 
 Stdout and stderr are only collected after the process exits. Untested, from reading the code: a skill that writes more than the OS pipe buffer before exiting would block until the timeout. To be safe, keep outputs small or write large results to a file and return its path.
 
-<sub>Sources: [runtime.rs:1005-1044](../crates/skrun/src/runtime.rs#L1005-L1044) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
+<sub>Sources: [runtime.rs:1019-1058](../crates/skrun/src/runtime.rs#L1019-L1058) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
 
 ### Builds
 
@@ -294,15 +294,15 @@ Stdout and stderr are only collected after the process exits. Untested, from rea
 
 Both build steps capture output and report only stderr on failure. `markdown` skills cannot be built.
 
-<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:932-982](../crates/skrun/src/runtime.rs#L932-L982) · [runtime.rs:1046-1058](../crates/skrun/src/runtime.rs#L1046-L1058)</sub>
+<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-996](../crates/skrun/src/runtime.rs#L946-L996) · [runtime.rs:1060-1072](../crates/skrun/src/runtime.rs#L1060-L1072)</sub>
 
 ### Install and list
 
-`install_local_skill` validates the source, then recursively copies it to `<root>/<id>`. An existing target fails with `installed skill already exists` unless `overwrite` is set; with `overwrite`, the target is deleted first, and installing a directory onto itself returns early without copying. The copy is re-loaded and returned, so a broken copy fails immediately. Everything in the source directory is copied, including built binaries and any `.venv`. Renaming with `--id` changes only the directory name; the copied `artifact.json` keeps its original `id`.
+`install_local_skill` validates the source, then recursively copies it to `<root>/<id>`. An existing target fails with `installed skill already exists` unless `overwrite` is set; with `overwrite`, the target is deleted first, and installing a directory onto itself returns early without copying. The copy is re-loaded and returned, so a broken copy fails immediately. Built binaries are copied, but directories named `.venv`, `__pycache__`, `target` or `.git` are skipped at any depth unless the artifact's `entry` lies inside one; a copied `.venv` would still point at the old interpreter, and uv rebuilds it on the next run. Renaming with `--id` changes only the directory name; the copied `artifact.json` keeps its original `id`.
 
 `list_installed_skills` scans the root's direct subdirectories that hold `artifact.json` or `SKILL.md`, silently skips those that fail to load, and sorts by id. A missing root lists as empty. Use `skill show <id>` to see the load error for a skill that is missing from the list.
 
-<sub>Sources: [runtime.rs:727-773](../crates/skrun/src/runtime.rs#L727-L773) · [runtime.rs:1064-1085](../crates/skrun/src/runtime.rs#L1064-L1085) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
+<sub>Sources: [runtime.rs:727-787](../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1085-1102](../crates/skrun/src/runtime.rs#L1085-L1102) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
 
 ### The Python boundary
 
@@ -364,7 +364,7 @@ The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must 
 
 Generated by Codocia from the code on every build: areas, each area's own description, import dependencies between areas, and the pages that explain them.
 
-In scope: 50 files, 4,298 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
+In scope: 50 files, 4,377 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
 
 ### Files
 
@@ -391,7 +391,7 @@ In scope: 50 files, 4,298 lines; excluded `docs/**`, `python/tests/**`, `**/test
 
 - (files) — 19 lines, 1 file. Public API for the skrun executable skill runtime.\
   Explained in: [Getting Started](#getting-started) (1)
-- `src/` — 1,934 lines, 3 files. Public API for the skrun executable skill runtime.\
+- `src/` — 2,013 lines, 3 files. Public API for the skrun executable skill runtime.\
   Hub files: `lib.rs` `runtime.rs` `main.rs`\
   Explained in: [Overview](#overview) (3), [Getting Started](#getting-started) (3), [Reference](#reference) (6), [How It Works](#how-it-works) (6), [Contributing](#contributing) (1)
 
