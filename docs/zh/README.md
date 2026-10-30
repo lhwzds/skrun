@@ -20,4 +20,4 @@ title: skrun
 
 - [代码结构](structure.md) — 从代码生成：功能区、依赖、讲解页
 
-<sub>生成自 https://github.com/lhwzds/skrun @ `b6a4feb181`</sub>
+<sub>生成自 https://github.com/lhwzds/skrun @ `72c05758cf`</sub>

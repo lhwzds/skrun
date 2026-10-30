@@ -61,7 +61,7 @@ stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根�
 
 ## 安装与列出
 
-`install_local_skill` 先校验源目录，再把它递归复制到 `<root>/<id>`。目标已存在时会以 `installed skill already exists` 失败，除非设置了 `overwrite`；设置 `overwrite` 时会先删除目标，而把目录安装到它自身时会直接返回，不做复制。复制完成后会重新加载并返回副本，所以副本有问题会立即失败。构建好的二进制会被复制，但任意层级下名为 `.venv`、`__pycache__`、`target` 或 `.git` 的目录都会跳过，除非 artifact 的 `entry` 就在其中；复制过去的 `.venv` 仍会指向原来的解释器，uv 会在下次运行时重建它。用 `--id` 重命名只改变目录名；复制过去的 `artifact.json` 仍保留原来的 `id`。
+`install_local_skill` 先校验源目录，再把它递归复制到 `<root>/<id>`。目标已存在时会以 `installed skill already exists` 失败，除非设置了 `overwrite`；设置 `overwrite` 时会先删除目标，而把目录安装到它自身时会直接返回，不做复制。复制完成后会重新加载并返回副本；这里只校验元数据，所以没构建过的 Rust skill 也能装上，要到运行时才失败。构建好的二进制会被复制，但任意层级下名为 `.venv`、`__pycache__`、`target` 或 `.git` 的目录都会跳过，除非 artifact 的 `entry` 就在其中；复制过去的 `.venv` 仍会指向原来的解释器，uv 会在下次运行时重建它。用 `--id` 重命名只改变目录名；复制过去的 `artifact.json` 仍保留原来的 `id`。
 
 `list_installed_skills` 扫描根目录下直接包含 `artifact.json` 或 `SKILL.md` 的子目录，静默跳过加载失败的目录，并按 id 排序。根目录不存在时返回空列表。如果某个 skill 没出现在列表中，可以用 `skill show <id>` 查看它的加载错误。
 
@@ -69,6 +69,6 @@ stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根�
 
 ## Python 边界
 
-`skrun-native` 暴露五个函数（`runtime_load_artifact_json`、`runtime_list_skills_json`、`runtime_build_skill_json`、`runtime_run_skill_json`、`runtime_install_local_skill_json`）。每个函数都接收字符串并返回 JSON 字符串，所以 ABI 只是 serde JSON，Python 的 dataclass 与 Rust 结构体一一对应。每次调用都在 `py.detach` 中运行，构建或 skill 进程运行期间会释放 GIL，其他 Python 线程可以继续工作。Rust 错误会变成 `RuntimeError`，SDK 再把它们重新包装为 `SkillRuntimeError`。`root` 为空或缺失时回退到 `default_skills_dir`。从 Python 发起的构建总是使用默认的 Cargo/uv 命令和 release profile，只有 `target_dir` 可配置。
+`skrun-native` 暴露五个函数（`runtime_load_artifact_json`、`runtime_list_skills_json`、`runtime_build_skill_json`、`runtime_run_skill_json`、`runtime_install_local_skill_json`）。每个函数都接收字符串并返回 JSON 字符串，所以 ABI 只是 serde JSON，Python 的 dataclass 与 Rust 结构体一一对应。每次调用都在 `py.detach` 中运行，构建或 skill 进程运行期间会释放 GIL，其他 Python 线程可以继续工作。Rust 错误会变成 `RuntimeError`，SDK 再把它们重新包装为 `SkillRuntimeError`。对 list 和 install，`root` 为空或缺失时回退到 `default_skills_dir`；load、build 和 run 必须显式传入 `root`。从 Python 发起的构建总是使用默认的 Cargo/uv 命令和 release profile，只有 `target_dir` 可配置。
 
 <sub>来源: [lib.rs:39-151](../../crates/py/src/lib.rs#L39-L151) · [skill.py:316-331](../../python/skrun/skill.py#L316-L331)</sub>

@@ -4,7 +4,7 @@
 
 skrun 是一个以 Python 为先的可执行 skill 运行时，让 agent 框架能够发现、构建、安装和调用本地 skill。
 
-文档维护在 [`docs/`](./docs/index.md) 中。发布版本和源码可从 [GitHub 仓库](https://github.com/lhwzds/skrun)获取。
+文档维护在 [`docs/`](./docs/zh/README.md) 中。发布版本和源码可从 [GitHub 仓库](https://github.com/lhwzds/skrun)获取。
 
 ## 原则
 

@@ -5,7 +5,7 @@ English | [中文](README_CN.md)
 skrun is a Python-first executable skill runtime that lets agent frameworks
 discover, build, install, and call local skills.
 
-Documentation is maintained in [`docs/`](./docs/index.md). Releases and source
+Documentation is maintained in [`docs/`](./docs/README.md). Releases and source
 are available from the [GitHub repository](https://github.com/lhwzds/skrun).
 
 ## Principles
