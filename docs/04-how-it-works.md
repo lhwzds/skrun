@@ -4,6 +4,8 @@ title: How It Works
 
 # How It Works
 
+<sub>**English** · [中文](zh/04-how-it-works.md)</sub>
+
 Every operation starts the same way: `load_artifact` reads the skill directory into a validated `SkillArtifact`. `build_skill` and `run_skill` then dispatch on its `kind`; `install_local_skill` copies the directory. There is no daemon, cache or registry; the filesystem is the only state.
 
 <sub>Sources: [runtime.rs:594-609](../crates/skrun/src/runtime.rs#L594-L609)</sub>

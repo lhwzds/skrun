@@ -4,6 +4,8 @@ title: skrun
 
 # skrun
 
+<sub>**English** · [中文](zh/README.md)</sub>
+
 These docs explain skrun for developers who want to package local tools as executable skills and call them from an agent framework. They cover what a skill artifact is, how to scaffold, build, install and run one from the CLI or Python, the exact manifest fields, flags and environment variables, how the Rust runtime enforces the stdio JSON contract, and how to work on the repository itself. The README gives the elevator pitch; these pages go one level deeper and are written from the code.
 
 ## Contents

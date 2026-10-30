@@ -4,6 +4,8 @@ title: Getting Started
 
 # Getting Started
 
+<sub>**English** · [中文](zh/02-getting-started.md)</sub>
+
 You need a Rust toolchain to build `rust_binary` skills, [uv](https://docs.astral.sh/uv/) to build and run `python_uv` skills, and Python 3.11 or newer for the Python package. By default skrun invokes the plain commands `cargo` and `uv`, so both must be on your PATH.
 
 <sub>Sources: [runtime.rs:313-337](../crates/skrun/src/runtime.rs#L313-L337) · [pyproject.toml:6-8](../pyproject.toml#L6-L8)</sub>

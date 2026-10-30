@@ -4,6 +4,8 @@ title: Contributing
 
 # Contributing
 
+<sub>**English** · [中文](zh/05-contributing.md)</sub>
+
 The Cargo workspace has two members: `crates/skrun` (default member: runtime library and CLI) and `crates/py` (`skrun-native`). PyO3 is behind the optional `python-module` feature, so `cargo build` and `cargo test` at the root never need a Python interpreter; only maturin and the native checks enable it. The module map is in [Code structure](structure.md).
 
 <sub>Sources: [Cargo.toml:1-17](../Cargo.toml#L1-L17) · [Cargo.toml:13-15](../crates/py/Cargo.toml#L13-L15) · [build.rs](../crates/py/build.rs)</sub>

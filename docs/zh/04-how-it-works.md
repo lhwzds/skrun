@@ -1,0 +1,74 @@
+---
+title: 工作原理
+---
+
+# 工作原理
+
+<sub>[English](../04-how-it-works.md) · **中文**</sub>
+
+每个操作的起点都一样：`load_artifact` 把 skill 目录读取为一个经过校验的 `SkillArtifact`。之后 `build_skill` 和 `run_skill` 按它的 `kind` 分发处理；`install_local_skill` 则复制目录。没有守护进程、缓存或注册中心，文件系统就是唯一的状态。
+
+<sub>来源: [runtime.rs:594-609](../../crates/skrun/src/runtime.rs#L594-L609)</sub>
+
+## 加载 skill 目录
+
+如果存在 `artifact.json`，先解码它，再由 `apply_skill_markdown` 用 `SKILL.md` 填充清单中留空的元数据字段（`description`、`tags`、`suggested_tools`、`content`、`source_ref`）。清单始终优先；`SKILL.md` 是给人看的说明，agent 也可以读取。如果没有 `artifact.json`，目录中必须有 `SKILL.md`，并成为一个以目录名命名的 `markdown` skill。无论哪种情况，`validate` 都在最后运行，所以每个调用方（CLI、Rust 库、Python）遇到错误清单时看到的错误都一样。
+
+<sub>来源: [runtime.rs:594-609](../../crates/skrun/src/runtime.rs#L594-L609) · [runtime.rs:427-447](../../crates/skrun/src/runtime.rs#L427-L447) · [runtime.rs:392-425](../../crates/skrun/src/runtime.rs#L392-L425)</sub>
+
+## 一次调用如何执行
+
+```mermaid
+sequenceDiagram
+  participant C as caller
+  participant R as run_skill
+  participant P as skill process
+  C->>R: dir, JSON value, RunOptions
+  R->>R: canonicalize dir, load_artifact
+  R->>P: spawn in dir (rust: entry binary / python: uv run --project dir python entry)
+  R->>P: stdin = JSON + "\n", then close
+  loop every 10 ms until exit or timeout
+    R->>P: try_wait
+  end
+  P-->>R: exit status, stdout, stderr
+  R->>R: non-zero exit -> error; stdout must parse as a JSON object
+  R-->>C: SkillRunOutput { value, stderr, exit_code }
+```
+
+工作目录就是 skill 目录，所以 skill 可以用相对路径打开自己的文件。写入一个值后就关闭 stdin，skill 因此只需一直读到 EOF。stderr 会被捕获并作为诊断信息返回，从不解析。
+
+<sub>来源: [runtime.rs:675-717](../../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:984-1044](../../crates/skrun/src/runtime.rs#L984-L1044)</sub>
+
+## 哪些情况算失败
+
+- **超时**：超过 `timeout`（默认 60 秒）后进程会被杀掉，调用以 `skill process timed out after Ns` 失败。
+- **非零退出**：调用失败，并带上退出码和去掉首尾空白的 stderr。stdout 会被丢弃，所以如果 skill 打印结构化错误内容后以 1 退出（`regex-finder` 就是这样），这些内容会丢失；请同时把消息写到 stderr，或者以 0 退出并返回 `"ok": false`。
+- **输出不合法**：stdout 必须恰好是一个 JSON 值，而且必须是对象；数组、标量或多行 JSON 都会报错。
+
+stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根据代码推断：skill 如果在退出前写入的数据超过操作系统管道缓冲区，会一直阻塞到超时。稳妥起见，保持输出较小，或把大结果写到文件里再返回文件路径。
+
+<sub>来源: [runtime.rs:1005-1044](../../crates/skrun/src/runtime.rs#L1005-L1044) · [main.rs:27-35](../../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
+
+## 构建
+
+`rust_binary`：运行 `cargo build --manifest-path <dir>/Cargo.toml --target-dir <target>`，profile 为 `release` 时加 `--release`，否则加 `--profile <name>`，然后把 `<target>/<profile>/<id>`（加上平台的可执行文件后缀）复制到 `entry`。因此二进制名必须与 skill id 相同。无论 profile 是什么都会复制到 `entry`，所以使用脚手架生成的 entry 时，debug 构建的产物也会落在 `bin/release/...`。
+
+`python_uv`：仅在缺少 `uv.lock` 时运行 `uv lock --project <dir>`，然后运行 `uv sync --project <dir> --locked`。锁文件是 skill 的一部分，因此安装可复现。
+
+两种构建步骤都会捕获输出，失败时只报告 stderr。`markdown` skill 无法构建。
+
+<sub>来源: [runtime.rs:661-673](../../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:932-982](../../crates/skrun/src/runtime.rs#L932-L982) · [runtime.rs:1046-1058](../../crates/skrun/src/runtime.rs#L1046-L1058)</sub>
+
+## 安装与列出
+
+`install_local_skill` 先校验源目录，再把它递归复制到 `<root>/<id>`。目标已存在时会以 `installed skill already exists` 失败，除非设置了 `overwrite`；设置 `overwrite` 时会先删除目标，而把目录安装到它自身时会直接返回，不做复制。复制完成后会重新加载并返回副本，所以副本有问题会立即失败。源目录中的所有内容都会被复制，包括构建好的二进制和任何 `.venv`。用 `--id` 重命名只改变目录名；复制过去的 `artifact.json` 仍保留原来的 `id`。
+
+`list_installed_skills` 扫描根目录下直接包含 `artifact.json` 或 `SKILL.md` 的子目录，静默跳过加载失败的目录，并按 id 排序。根目录不存在时返回空列表。如果某个 skill 没出现在列表中，可以用 `skill show <id>` 查看它的加载错误。
+
+<sub>来源: [runtime.rs:727-773](../../crates/skrun/src/runtime.rs#L727-L773) · [runtime.rs:1064-1085](../../crates/skrun/src/runtime.rs#L1064-L1085) · [runtime.rs:760-766](../../crates/skrun/src/runtime.rs#L760-L766)</sub>
+
+## Python 边界
+
+`skrun-native` 暴露五个函数（`runtime_load_artifact_json`、`runtime_list_skills_json`、`runtime_build_skill_json`、`runtime_run_skill_json`、`runtime_install_local_skill_json`）。每个函数都接收字符串并返回 JSON 字符串，所以 ABI 只是 serde JSON，Python 的 dataclass 与 Rust 结构体一一对应。每次调用都在 `py.detach` 中运行，构建或 skill 进程运行期间会释放 GIL，其他 Python 线程可以继续工作。Rust 错误会变成 `RuntimeError`，SDK 再把它们重新包装为 `SkillRuntimeError`。`root` 为空或缺失时回退到 `default_skills_dir`。从 Python 发起的构建总是使用默认的 Cargo/uv 命令和 release profile，只有 `target_dir` 可配置。
+
+<sub>来源: [lib.rs:39-151](../../crates/py/src/lib.rs#L39-L151) · [skill.py:316-331](../../python/skrun/skill.py#L316-L331)</sub>

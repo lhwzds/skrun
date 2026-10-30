@@ -4,6 +4,8 @@ title: Reference
 
 # Reference
 
+<sub>**English** · [中文](zh/03-reference.md)</sub>
+
 Exact names for the CLI, environment, file formats and Python API, copied from the code. `skrun`, `skrun -h`, `skrun --help` and `skrun help` print the usage text.
 
 <sub>Sources: [main.rs:438-450](../crates/skrun/src/main.rs#L438-L450)</sub>
