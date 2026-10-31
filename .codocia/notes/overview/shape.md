@@ -2,13 +2,13 @@
 title: One runtime, three front doors
 order: 20
 evidence:
-  - crates/skrun/src/lib.rs:1-14 #dfbf2e563d16
+  - crates/skrun/src/lib.rs:1-16 #357e2191839e
   - crates/py/src/lib.rs:103-129 #2a80d2aafa50
   - python/skrun/skill.py:295-321 #d44c8526b13b
   - pyproject.toml:38-44 #4ef68d3d3b89
 ---
 
-Skill behaviour lives in one Rust module, `crates/skrun/src/runtime.rs`; a second module, `catalog`, only does bookkeeping for a directory of guidance skills ([[reference]]). The `skrun` crate re-exports the runtime as a library and also ships the `skrun` CLI binary. Python reaches the same code through `skrun-native` (`crates/py`), a PyO3 extension that maturin installs as `skrun.skrun_native`; the pure-Python `skrun` package only converts arguments and JSON.
+Skill behaviour lives in one Rust module, `crates/skrun/src/runtime.rs`; `catalog` only does bookkeeping for a directory of guidance skills ([[reference]]), and `store` with `risk` copies external skills into a local store and scans them without running them ([[store]]). The `skrun` crate re-exports the runtime as a library and also ships the `skrun` CLI binary. Python reaches the same code through `skrun-native` (`crates/py`), a PyO3 extension that maturin installs as `skrun.skrun_native`; the pure-Python `skrun` package only converts arguments and JSON.
 
 ```mermaid
 flowchart LR

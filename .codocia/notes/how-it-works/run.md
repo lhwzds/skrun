@@ -3,7 +3,7 @@ title: How a call runs
 order: 20
 evidence:
   - crates/skrun/src/runtime.rs:675-717 #279ff9e9d83d
-  - crates/skrun/src/runtime.rs:1006-1066 #2fdef634e2c1
+  - crates/skrun/src/runtime.rs:1006-1069 #2cb35e53f1bc
 ---
 
 ```mermaid

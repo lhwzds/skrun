@@ -30,7 +30,7 @@ Every skill directory has a `kind` (`ArtifactKind`):
 
 ## One runtime, three front doors
 
-Skill behaviour lives in one Rust module, `crates/skrun/src/runtime.rs`; a second module, `catalog`, only does bookkeeping for a directory of guidance skills ([Reference](03-reference.md)). The `skrun` crate re-exports the runtime as a library and also ships the `skrun` CLI binary. Python reaches the same code through `skrun-native` (`crates/py`), a PyO3 extension that maturin installs as `skrun.skrun_native`; the pure-Python `skrun` package only converts arguments and JSON.
+Skill behaviour lives in one Rust module, `crates/skrun/src/runtime.rs`; `catalog` only does bookkeeping for a directory of guidance skills ([Reference](03-reference.md)), and `store` with `risk` copies external skills into a local store and scans them without running them ([Store and Risk Tiers](05-store.md)). The `skrun` crate re-exports the runtime as a library and also ships the `skrun` CLI binary. Python reaches the same code through `skrun-native` (`crates/py`), a PyO3 extension that maturin installs as `skrun.skrun_native`; the pure-Python `skrun` package only converts arguments and JSON.
 
 ```mermaid
 flowchart LR
@@ -42,7 +42,7 @@ flowchart LR
 
 Because the Python package has no subprocess fallback, a Python call and a CLI call validate and execute a skill identically.
 
-<sub>Sources: [lib.rs:1-14](../crates/skrun/src/lib.rs#L1-L14) · [lib.rs:103-129](../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../pyproject.toml#L38-L44)</sub>
+<sub>Sources: [lib.rs:1-16](../crates/skrun/src/lib.rs#L1-L16) · [lib.rs:103-129](../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../pyproject.toml#L38-L44)</sub>
 
 ## Why the workspace is this small
 

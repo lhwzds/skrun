@@ -8,7 +8,7 @@ title: 参考
 
 CLI、环境变量、文件格式和 Python API 的准确名称，均摘自代码。`skrun`、`skrun -h`、`skrun --help` 和 `skrun help` 都会打印用法说明。
 
-<sub>来源: [main.rs:248-251](../../crates/skrun/src/main.rs#L248-L251) · [main.rs:639-654](../../crates/skrun/src/main.rs#L639-L654)</sub>
+<sub>来源: [main.rs:337-340](../../crates/skrun/src/main.rs#L337-L340) · [main.rs:1004-1023](../../crates/skrun/src/main.rs#L1004-L1023)</sub>
 
 ## CLI 命令与参数
 
@@ -23,25 +23,26 @@ skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 
 | `list` | `--root`、`--format text\|json`（`text`） |
 | `show <id>` | `--root`、`--format text\|json`（`text`） |
 
-`--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 的文本输出是以制表符分隔的 `id kind version name`。给 `run` 同时传目录和 `--id` 会报错。`--cargo` 和 `--uv` 存在，但没有写进用法说明。出错时会向 stderr 打印 `Error: ...` 并以 1 退出；看起来像密钥的回显参数和路径显示为 `<redacted>`。
+`--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 打印以制表符分隔的 `id kind version name`。`run` 不接受同时给出目录和 `--id`。`--cargo` 和 `--uv` 没有写进用法说明。出错时向 stderr 打印 `Error: ...` 并以 1 退出，用法错误（未知、缺失或无效的参数）则以 2 退出；看起来像密钥的回显参数和路径显示为 `<redacted>`。
 
-<sub>来源: [main.rs:47-52](../../crates/skrun/src/main.rs#L47-L52) · [main.rs:272-301](../../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-433](../../crates/skrun/src/main.rs#L370-L433) · [main.rs:577-598](../../crates/skrun/src/main.rs#L577-L598) · +1</sub>
+<sub>来源: [main.rs:49-66](../../crates/skrun/src/main.rs#L49-L66) · [main.rs:364-395](../../crates/skrun/src/main.rs#L364-L395) · [main.rs:397-468](../../crates/skrun/src/main.rs#L397-L468) · [main.rs:470-537](../../crates/skrun/src/main.rs#L470-L537) · [main.rs:939-968](../../crates/skrun/src/main.rs#L939-L968) · +1</sub>
 
 ## Catalog 命令
 
-`skrun catalog` 处理的是一个指导性 skill 目录：含 `SKILL.md` 的非隐藏子目录，以及除 `SKILL_REGISTRY.md`、`README.md`、`README_CN.md`、`AGENTS.md` 和 `CLAUDE.md` 之外的顶层 `*.md`。
+`skrun catalog` 处理的是一个指导性 skill 目录：含 `SKILL.md` 的非隐藏子目录，以及除 `SKILL_REGISTRY.md`、`README.md`、`README_CN.md`、`AGENTS.md` 和 `CLAUDE.md` 之外的顶层 `*.md`。其中 `add` 和 `inspect` 处理的是存储（[存储与风险等级](05-store.md)）。
 
 | 命令 | 参数（默认值） | 何时以 1 退出 |
 |---|---|---|
 | `index <dir>` | `--out <file>`（stdout） | 目录无法读取 |
 | `registry <dir>` | `--registry`（`<dir>/SKILL_REGISTRY.md`）、`--write` | 不带 `--write` 时：表格有偏差；任何模式下：文件不存在、没有表格，或无法读写 |
 | `check <dir>` | `--registry`、`--index` | 有任何错误 |
+| `search <dir> <query>...` | `--kind folder\|flat`、`--has-scripts`、`--limit`（`10`）、`--json` | 没有匹配（`--json` 打印 `[]`） |
 
-`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及含密钥的行（见下）。唯一的警告是 frontmatter `name` 与目录名不同。注册表和索引在位于默认路径或显式传入时才检查。
+`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、缺失或有偏差的注册表表格、过期的 `skills.json`，以及含密钥的行。唯一的警告是 frontmatter `name` 与目录名不同。
 
-密钥指私钥块，以及以 `AKIA`、`sk-`（含 `sk-proj-`、`sk-ant-`）、`gh[pousr]_`、`github_pat_`、`glpat-`、`xox[baprs]-` 或 `AIza` 开头的令牌。`check` 和 `registry` 打印的用户文本（名称、链接目标、路径、行、选项）若匹配，会经 `redact` 显示为 `<redacted>`；密钥发现只给出 `path:line`，路径同样会被遮蔽。`skills.json` 保留真实路径（[工作原理](04-how-it-works.md)）。
+密钥指私钥块，以及以 `AKIA`、`sk-`（含 `sk-proj-`、`sk-ant-`）、`gh[pousr]_`、`github_pat_`、`glpat-`、`xox[baprs]-` 或 `AIza` 开头的令牌。`check`、`registry` 和 `search` 打印的用户文本若匹配，会显示为 `<redacted>`（`redact`）；密钥发现只给出 `path:line`。`skills.json` 保留真实路径（[工作原理](04-how-it-works.md)）。
 
-<sub>来源: [main.rs:130-152](../../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../../crates/skrun/src/catalog.rs#L353-L400) · +5</sub>
+<sub>来源: [main.rs:173-211](../../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:63-69](../../crates/skrun/src/catalog.rs#L63-L69) · [catalog.rs:370-417](../../crates/skrun/src/catalog.rs#L370-L417) · +6</sub>
 
 ## 环境变量与默认路径
 
@@ -49,12 +50,13 @@ skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 
 |---|---|
 | `SKRUN_SKILLS_DIR` | `run --id`、`install-local`、`list`、`show` 和 Python SDK 使用的 skill 根目录 |
 | `HOME` | 后备根目录 `$HOME/.skrun/skills`；两者都未设置时，CLI 和 Rust 调用方会以 `HOME is not set` 失败 |
+| `SKRUN_STORE` | 未给 `--store` 时 `catalog add` 和 `inspect` 使用的存储，否则为 `$HOME/.skrun/store`（[存储与风险等级](05-store.md)） |
 
 CLI 会提前计算这个默认值（`root.unwrap_or(default_skills_dir()?)`），所以两个变量都未设置时，即使传了 `--root`，`run --id`、`install-local`、`list` 和 `show` 也会以 `HOME is not set` 失败。
 
-`build` 构建 `rust_binary` 时，除非指定 `--target-dir`，否则使用 `<system temp dir>/skrun-skill-targets/<id>` 作为 Cargo 的 target 目录，因此默认情况下，skill 构建不会在 skill 目录中写入 Cargo target 目录。Python SDK 自行解析同样的根目录（会展开 `~`），设置了 `root=` 参数时则直接传递该参数。
+`build` 构建 `rust_binary` 时，除非指定 `--target-dir`，否则使用 `<system temp dir>/skrun-skill-targets/<id>` 作为 Cargo 的 target 目录，因此 skill 构建不会在 skill 目录中留下 Cargo target 目录。Python SDK 自行解析同样的根目录（会展开 `~`），设置了 `root=` 参数时则直接传递该参数。
 
-<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:357-365](../../crates/skrun/src/main.rs#L357-L365) · +3</sub>
+<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:455-463](../../crates/skrun/src/main.rs#L455-L463) · +4</sub>
 
 ## artifact.json
 
@@ -109,6 +111,6 @@ id 不能为空，只能包含 ASCII 字母、数字、`-` 和 `_`，并且必�
 
 `SkillRuntime(root=..., uv=...)` 把同样的操作组织在同一个 skill 根目录下。所有失败（包括缺少原生扩展）都会抛出 `SkillRuntimeError`。有两处与 CLI 不同：`timeout` 会被截断为整秒；`SkillRuntime`/`SkillHandle` 上的 `uv` 字段只是存着，并不会传给原生调用，所以 Python skill 总是运行 PATH 中找到的 `uv`。
 
-已知问题：`install_local` 返回 `self.skill(artifact.id)`。当用 `skill_id=` 重命名一个带 `artifact.json` 的 skill 时，副本保留的是清单中原来的 id，因此返回的 handle 解析到的是 `<root>/<original id>` 而不是安装的副本，结果要么失败，要么指向另一个 skill。请自己用 `skrun.skill(skill_id, root=...)` 查找副本。
+已知问题：`install_local` 返回 `self.skill(artifact.id)`。当用 `skill_id=` 重命名一个带 `artifact.json` 的 skill 时，副本保留清单中的 id，因此 handle 解析到 `<root>/<original id>`，而不是副本。请用 `skrun.skill(skill_id, root=...)` 查找它。
 
 <sub>来源: [__init__.py:7-35](../../python/skrun/__init__.py#L7-L35) · [skill.py:172-234](../../python/skrun/skill.py#L172-L234) · [skill.py:251-292](../../python/skrun/skill.py#L251-L292)</sub>

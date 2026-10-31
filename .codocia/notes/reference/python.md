@@ -18,4 +18,4 @@ evidence:
 
 `SkillRuntime(root=..., uv=...)` groups the same operations around one skills root. Every failure, including a missing native extension, raises `SkillRuntimeError`. Two details differ from the CLI: `timeout` is truncated to whole seconds, and the `uv` field on `SkillRuntime`/`SkillHandle` is stored but not passed to the native call, so Python skills always run the `uv` found on PATH.
 
-Known issue: `install_local` returns `self.skill(artifact.id)`. When `skill_id=` renames a skill that has `artifact.json`, the copy keeps the manifest's original id, so the returned handle resolves `<root>/<original id>` instead of the installed copy, and fails or points at a different skill. Look the copy up yourself with `skrun.skill(skill_id, root=...)`.
+Known issue: `install_local` returns `self.skill(artifact.id)`. When `skill_id=` renames a skill that has `artifact.json`, the copy keeps the manifest's id, so the handle resolves `<root>/<original id>`, not the copy. Look it up with `skrun.skill(skill_id, root=...)`.

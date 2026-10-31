@@ -18,7 +18,7 @@ cargo install skrun               # the `skrun` CLI from crates.io
 cargo install --path crates/skrun # or: the CLI from a checkout
 ```
 
-Both packages are published: PyPI has `skrun` 0.1.0 and crates.io has `skrun` 0.1.1 (why the versions differ: [Contributing](05-contributing.md)). The PyPI job runs on `ubuntu-22.04` with Python 3.13, so the published binary wheel targets that platform; elsewhere pip falls back to the sdist and needs Rust plus maturin to compile `skrun-native`. To work from a checkout instead, see [Contributing](05-contributing.md).
+Both packages are published: PyPI has `skrun` 0.1.0 and crates.io has `skrun` 0.1.1 (why the versions differ: [Contributing](06-contributing.md)). The PyPI job runs on `ubuntu-22.04` with Python 3.13, so the published binary wheel targets that platform; elsewhere pip falls back to the sdist and needs Rust plus maturin to compile `skrun-native`. To work from a checkout instead, see [Contributing](06-contributing.md).
 
 <sub>Sources: [Cargo.toml:1-15](../crates/skrun/Cargo.toml#L1-L15) · [publish-python.yml:22](../.github/workflows/publish-python.yml#L22) · [publish-python.yml:34-37](../.github/workflows/publish-python.yml#L34-L37)</sub>
 
@@ -37,7 +37,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 For Python, use `--kind python_uv`: the scaffold is a `pyproject.toml` plus an echoing `skill.py`, and `build` runs `uv lock`/`uv sync`.
 
-<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:80-88](../crates/skrun/src/main.rs#L80-L88)</sub>
+<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:123-131](../crates/skrun/src/main.rs#L123-L131)</sub>
 
 ## Install it and call it from Python
 
@@ -58,7 +58,7 @@ skrun.skill("/tmp/rust-echo").call({"ok": True})   # or by path
 
 `skrun.skill` treats its argument as a path when that directory contains `artifact.json` or `SKILL.md`, otherwise as an id under the skills root. Because install copies, re-install with `--overwrite` after rebuilding a skill ([How It Works](04-how-it-works.md)).
 
-<sub>Sources: [main.rs:89-114](../crates/skrun/src/main.rs#L89-L114) · [skill.py:236-240](../python/skrun/skill.py#L236-L240)</sub>
+<sub>Sources: [main.rs:132-157](../crates/skrun/src/main.rs#L132-L157) · [skill.py:236-240](../python/skrun/skill.py#L236-L240)</sub>
 
 ## Try a real example
 

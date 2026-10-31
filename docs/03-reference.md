@@ -8,7 +8,7 @@ title: Reference
 
 Exact names for the CLI, environment, file formats and Python API, copied from the code. `skrun`, `skrun -h`, `skrun --help` and `skrun help` print the usage text.
 
-<sub>Sources: [main.rs:248-251](../crates/skrun/src/main.rs#L248-L251) · [main.rs:639-654](../crates/skrun/src/main.rs#L639-L654)</sub>
+<sub>Sources: [main.rs:337-340](../crates/skrun/src/main.rs#L337-L340) · [main.rs:1004-1023](../crates/skrun/src/main.rs#L1004-L1023)</sub>
 
 ## CLI commands and flags
 
@@ -23,25 +23,26 @@ Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<
 | `list` | `--root`, `--format text\|json` (`text`) |
 | `show <id>` | `--root`, `--format text\|json` (`text`) |
 
-`--root` defaults to the skills root (see below). Text output of `list` and `show` is tab-separated `id kind version name`. Passing both a directory and `--id` to `run` is an error. `--cargo` and `--uv` exist but are not in the usage text. Errors print `Error: ...` to stderr and exit 1; echoed arguments and paths that look like a secret print as `<redacted>`.
+`--root` defaults to the skills root (below). `list` and `show` print tab-separated `id kind version name`. `run` rejects a directory plus `--id`. `--cargo` and `--uv` are missing from the usage text. Errors print `Error: ...` to stderr and exit 1, or 2 for a usage error (unknown, missing or invalid argument); echoed arguments and paths that look like a secret print as `<redacted>`.
 
-<sub>Sources: [main.rs:47-52](../crates/skrun/src/main.rs#L47-L52) · [main.rs:272-301](../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-433](../crates/skrun/src/main.rs#L370-L433) · [main.rs:577-598](../crates/skrun/src/main.rs#L577-L598) · +1</sub>
+<sub>Sources: [main.rs:49-66](../crates/skrun/src/main.rs#L49-L66) · [main.rs:364-395](../crates/skrun/src/main.rs#L364-L395) · [main.rs:397-468](../crates/skrun/src/main.rs#L397-L468) · [main.rs:470-537](../crates/skrun/src/main.rs#L470-L537) · [main.rs:939-968](../crates/skrun/src/main.rs#L939-L968) · +1</sub>
 
 ## Catalog commands
 
-`skrun catalog` works on a directory of guidance skills: non-hidden subdirectories with a `SKILL.md`, plus top-level `*.md` except `SKILL_REGISTRY.md`, `README.md`, `README_CN.md`, `AGENTS.md` and `CLAUDE.md`.
+`skrun catalog` works on a directory of guidance skills: non-hidden subdirectories with a `SKILL.md`, plus top-level `*.md` except `SKILL_REGISTRY.md`, `README.md`, `README_CN.md`, `AGENTS.md` and `CLAUDE.md`. Its `add` and `inspect` work on the store instead ([Store and Risk Tiers](05-store.md)).
 
 | command | flags (default) | exits 1 when |
 |---|---|---|
 | `index <dir>` | `--out <file>` (stdout) | the directory cannot be read |
 | `registry <dir>` | `--registry` (`<dir>/SKILL_REGISTRY.md`), `--write` | without `--write`, the table drifted; always, the file is missing, has no table, or cannot be read or written |
 | `check <dir>` | `--registry`, `--index` | any error |
+| `search <dir> <query>...` | `--kind folder\|flat`, `--has-scripts`, `--limit` (`10`), `--json` | nothing matches (`--json` prints `[]`) |
 
-`check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a registry without the table or drifted, a `skills.json` differing from a fresh index, and a line holding a secret (below). Its one warning: a frontmatter `name` differing from the directory name. Registry and index are checked when at the default path or passed.
+`check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a missing or drifted registry table, a stale `skills.json`, and a line holding a secret. Its one warning: a frontmatter `name` differing from the directory name.
 
-Secrets are private-key blocks and tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`. `check` and `registry` print matching user text (names, link targets, paths, rows, options) as `<redacted>` (`redact`); a secret finding gives only `path:line`, the path masked too. `skills.json` keeps real paths ([How It Works](04-how-it-works.md)).
+Secrets are private-key blocks and tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`. `check`, `registry` and `search` print matching user text as `<redacted>` (`redact`); a secret finding gives only `path:line`. `skills.json` keeps real paths ([How It Works](04-how-it-works.md)).
 
-<sub>Sources: [main.rs:130-152](../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../crates/skrun/src/catalog.rs#L353-L400) · +5</sub>
+<sub>Sources: [main.rs:173-211](../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:63-69](../crates/skrun/src/catalog.rs#L63-L69) · [catalog.rs:370-417](../crates/skrun/src/catalog.rs#L370-L417) · +6</sub>
 
 ## Environment and default paths
 
@@ -49,12 +50,13 @@ Secrets are private-key blocks and tokens starting `AKIA`, `sk-` (incl. `sk-proj
 |---|---|
 | `SKRUN_SKILLS_DIR` | skills root used by `run --id`, `install-local`, `list`, `show` and the Python SDK |
 | `HOME` | fallback root `$HOME/.skrun/skills`; the CLI and Rust callers fail with `HOME is not set` if neither is set |
+| `SKRUN_STORE` | store of `catalog add` and `inspect` when `--store` is absent, else `$HOME/.skrun/store` ([Store and Risk Tiers](05-store.md)) |
 
 The CLI computes this default eagerly (`root.unwrap_or(default_skills_dir()?)`), so with neither variable set, `run --id`, `install-local`, `list` and `show` fail with `HOME is not set` even when `--root` is given.
 
-`build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so by default skill builds write no Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
+`build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so skill builds leave no Cargo target directory in the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
 
-<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:357-365](../crates/skrun/src/main.rs#L357-L365) · +3</sub>
+<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:455-463](../crates/skrun/src/main.rs#L455-L463) · +4</sub>
 
 ## artifact.json
 
@@ -109,6 +111,6 @@ For the executable kinds (`rust_binary`, `python_uv`), `entry`, `schema.input` a
 
 `SkillRuntime(root=..., uv=...)` groups the same operations around one skills root. Every failure, including a missing native extension, raises `SkillRuntimeError`. Two details differ from the CLI: `timeout` is truncated to whole seconds, and the `uv` field on `SkillRuntime`/`SkillHandle` is stored but not passed to the native call, so Python skills always run the `uv` found on PATH.
 
-Known issue: `install_local` returns `self.skill(artifact.id)`. When `skill_id=` renames a skill that has `artifact.json`, the copy keeps the manifest's original id, so the returned handle resolves `<root>/<original id>` instead of the installed copy, and fails or points at a different skill. Look the copy up yourself with `skrun.skill(skill_id, root=...)`.
+Known issue: `install_local` returns `self.skill(artifact.id)`. When `skill_id=` renames a skill that has `artifact.json`, the copy keeps the manifest's id, so the handle resolves `<root>/<original id>`, not the copy. Look it up with `skrun.skill(skill_id, root=...)`.
 
 <sub>Sources: [__init__.py:7-35](../python/skrun/__init__.py#L7-L35) · [skill.py:172-234](../python/skrun/skill.py#L172-L234) · [skill.py:251-292](../python/skrun/skill.py#L251-L292)</sub>

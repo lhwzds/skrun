@@ -18,7 +18,7 @@ cargo install skrun               # 从 crates.io 安装 `skrun` CLI
 cargo install --path crates/skrun # 或者：从本地检出的代码安装 CLI
 ```
 
-两个包都已发布：PyPI 上是 `skrun` 0.1.0，crates.io 上是 `skrun` 0.1.1（版本为何不同见 [参与开发](05-contributing.md)）。PyPI 发布任务运行在 `ubuntu-22.04` 和 Python 3.13 上，所以发布的二进制 wheel 只针对该平台；在其他平台上 pip 会回退到 sdist，需要 Rust 和 maturin 来编译 `skrun-native`。如果想直接基于检出的代码开发，见 [参与开发](05-contributing.md)。
+两个包都已发布：PyPI 上是 `skrun` 0.1.0，crates.io 上是 `skrun` 0.1.1（版本为何不同见 [参与开发](06-contributing.md)）。PyPI 发布任务运行在 `ubuntu-22.04` 和 Python 3.13 上，所以发布的二进制 wheel 只针对该平台；在其他平台上 pip 会回退到 sdist，需要 Rust 和 maturin 来编译 `skrun-native`。如果想直接基于检出的代码开发，见 [参与开发](06-contributing.md)。
 
 <sub>来源: [Cargo.toml:1-15](../../crates/skrun/Cargo.toml#L1-L15) · [publish-python.yml:22](../../.github/workflows/publish-python.yml#L22) · [publish-python.yml:34-37](../../.github/workflows/publish-python.yml#L34-L37)</sub>
 
@@ -37,7 +37,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 Python 则使用 `--kind python_uv`：脚手架是一个 `pyproject.toml` 加一个回显输入的 `skill.py`，`build` 会运行 `uv lock`/`uv sync`。
 
-<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:80-88](../../crates/skrun/src/main.rs#L80-L88)</sub>
+<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:123-131](../../crates/skrun/src/main.rs#L123-L131)</sub>
 
 ## 安装 skill 并从 Python 调用
 
@@ -58,7 +58,7 @@ skrun.skill("/tmp/rust-echo").call({"ok": True})   # 或者按路径
 
 如果参数对应的目录中包含 `artifact.json` 或 `SKILL.md`，`skrun.skill` 就把它当作路径，否则当作 skill 根目录下的 id。由于安装是复制，重新构建 skill 后要用 `--overwrite` 重新安装（[工作原理](04-how-it-works.md)）。
 
-<sub>来源: [main.rs:89-114](../../crates/skrun/src/main.rs#L89-L114) · [skill.py:236-240](../../python/skrun/skill.py#L236-L240)</sub>
+<sub>来源: [main.rs:132-157](../../crates/skrun/src/main.rs#L132-L157) · [skill.py:236-240](../../python/skrun/skill.py#L236-L240)</sub>
 
 ## 试一个真实示例
 

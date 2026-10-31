@@ -1,9 +1,9 @@
 ---
 title: 一个运行时，三个入口
-source: #86a5ee85b60f
+source: #f5a961c09f6e
 ---
 
-skill 的行为都在一个 Rust 模块 `crates/skrun/src/runtime.rs` 中；另一个模块 `catalog` 只负责指导性 skill 目录的记账工作（[[reference]]）。`skrun` crate 既把运行时作为库重新导出，也附带 `skrun` CLI 二进制。Python 通过 `skrun-native`（`crates/py`）调用同一份代码，这是一个 PyO3 扩展，由 maturin 安装为 `skrun.skrun_native`；纯 Python 的 `skrun` 包只负责转换参数和 JSON。
+skill 的行为都在一个 Rust 模块 `crates/skrun/src/runtime.rs` 中；`catalog` 只负责指导性 skill 目录的记账工作（[[reference]]），`store` 与 `risk` 则把外部 skill 复制进本地存储并在不运行它们的前提下扫描（[[store]]）。`skrun` crate 既把运行时作为库重新导出，也附带 `skrun` CLI 二进制。Python 通过 `skrun-native`（`crates/py`）调用同一份代码，这是一个 PyO3 扩展，由 maturin 安装为 `skrun.skrun_native`；纯 Python 的 `skrun` 包只负责转换参数和 JSON。
 
 ```mermaid
 flowchart LR

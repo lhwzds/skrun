@@ -1,11 +1,12 @@
 ---
 title: skrun
-source: #102ec1cb808a
+source: #1d5cc2d7ef75
 pages:
   - overview: 概览
   - getting-started: 快速上手
   - reference: 参考
   - how-it-works: 工作原理
+  - store: 存储与风险等级
   - contributing: 参与开发
 ---
 

@@ -144,6 +144,15 @@ cargo run -p skrun -- catalog registry skills --write
 
 # 检查 frontmatter、链接、注册表、过期索引和疑似密钥；有错误时以 1 退出
 cargo run -p skrun -- catalog check skills
+
+# 按关键词为 skill 排序（每个词都须匹配）；无匹配时以 1 退出
+cargo run -p skrun -- catalog search skills regex --limit 5
+
+# 把外部 skill 复制进只读存储并扫描；从不运行它
+cargo run -p skrun -- catalog add ./downloaded-skill --from https://example.com/skill.zip
+
+# 打印某个 skill 已存储的版本、发现项和建议的沙箱等级
+cargo run -p skrun -- catalog inspect downloaded-skill
 ```
 
 ## Agent 框架示例

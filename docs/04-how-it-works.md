@@ -12,7 +12,7 @@ Every operation starts the same way: `load_artifact` reads the skill directory i
 
 ## Loading a skill directory
 
-If `artifact.json` exists, it is decoded and then `apply_skill_markdown` fills only the metadata fields the manifest left empty (`description`, `tags`, `suggested_tools`, `content`, `source_ref`) from `SKILL.md`. The manifest always wins; `SKILL.md` is the human-facing description that agents can read. Without `artifact.json`, the directory must contain `SKILL.md` and becomes a `markdown` skill named after the directory. Either way `validate` runs last, so every caller — CLI, Rust library, Python — sees the same errors for a bad manifest.
+If `artifact.json` exists, it is decoded and then `apply_skill_markdown` fills only the metadata fields the manifest left empty (`description`, `tags`, `suggested_tools`, `content`, `source_ref`) from `SKILL.md`. The manifest always wins. Without `artifact.json`, the directory must contain `SKILL.md` and becomes a `markdown` skill named after the directory. Either way `validate` runs last, so every caller — CLI, Rust library, Python — sees the same errors for a bad manifest.
 
 <sub>Sources: [runtime.rs:594-609](../crates/skrun/src/runtime.rs#L594-L609) · [runtime.rs:427-447](../crates/skrun/src/runtime.rs#L427-L447) · [runtime.rs:392-425](../crates/skrun/src/runtime.rs#L392-L425)</sub>
 
@@ -37,7 +37,7 @@ sequenceDiagram
 
 The working directory is the skill directory, so a skill can open its own files by relative path. Closing stdin after one value is what lets a skill simply read to EOF. Stderr is captured and returned as diagnostics, never parsed.
 
-<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:1006-1066](../crates/skrun/src/runtime.rs#L1006-L1066)</sub>
+<sub>Sources: [runtime.rs:675-717](../crates/skrun/src/runtime.rs#L675-L717) · [runtime.rs:1006-1069](../crates/skrun/src/runtime.rs#L1006-L1069)</sub>
 
 ## What counts as failure
 
@@ -45,9 +45,9 @@ The working directory is the skill directory, so a skill can open its own files 
 - **Non-zero exit**: the call fails with the exit code and trimmed stderr. Stdout is discarded, so a skill that prints a structured error body and exits 1 (as `regex-finder` does) loses that body; put the message on stderr too, or exit 0 with `"ok": false`.
 - **Bad output**: stdout must be exactly one JSON value and it must be an object; arrays, scalars or several JSON values are errors (one object spread over many lines is fine).
 
-Stdout and stderr are only collected after the process exits. Untested, from reading the code: a skill that writes more than the OS pipe buffer before exiting would block until the timeout. To be safe, keep outputs small or write large results to a file and return its path.
+Stdout and stderr are only collected after the process exits. Untested, from the code: a skill that writes more than the OS pipe buffer before exiting blocks until the timeout; write large results to a file and return its path.
 
-<sub>Sources: [runtime.rs:1027-1066](../crates/skrun/src/runtime.rs#L1027-L1066) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
+<sub>Sources: [runtime.rs:1027-1069](../crates/skrun/src/runtime.rs#L1027-L1069) · [main.rs:27-35](../examples/skills/regex-finder/src/main.rs#L27-L35)</sub>
 
 ## Builds
 
@@ -57,19 +57,19 @@ Stdout and stderr are only collected after the process exits. Untested, from rea
 
 Both build steps capture output and report only stderr on failure. `markdown` skills cannot be built.
 
-<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-992](../crates/skrun/src/runtime.rs#L946-L992) · [runtime.rs:1068-1080](../crates/skrun/src/runtime.rs#L1068-L1080)</sub>
+<sub>Sources: [runtime.rs:661-673](../crates/skrun/src/runtime.rs#L661-L673) · [runtime.rs:946-992](../crates/skrun/src/runtime.rs#L946-L992) · [runtime.rs:1071-1083](../crates/skrun/src/runtime.rs#L1071-L1083)</sub>
 
 ## Install and list
 
-`install_local_skill` validates the source, then recursively copies it to `<root>/<id>`. An existing target fails with `installed skill already exists` unless `overwrite` is set; with `overwrite`, the target is deleted first, and installing a directory onto itself returns early without copying. The copy is re-loaded and returned; only its metadata is checked, so an unbuilt Rust skill installs fine and fails when run. Built binaries are copied, but directories named `.venv`, `__pycache__`, `target` or `.git` are skipped at any depth unless the artifact's `entry` lies inside one; a copied `.venv` would still point at the old interpreter, and uv rebuilds it on the next run. Renaming with `--id` changes only the directory name; the copied `artifact.json` keeps its original `id`.
+`install_local_skill` validates the source, then recursively copies it to `<root>/<id>`. An existing target fails with `installed skill already exists` unless `overwrite` is set; with `overwrite`, the target is deleted first, and installing a directory onto itself returns early without copying. The copy is re-loaded and returned; only metadata is checked, so an unbuilt Rust skill installs fine and fails when run. Built binaries are copied, but directories named `.venv`, `__pycache__`, `target` or `.git` are skipped at any depth unless the artifact's `entry` lies inside one. Renaming with `--id` changes only the directory name; the copied `artifact.json` keeps its original `id`.
 
-`list_installed_skills` scans the root's direct subdirectories that hold `artifact.json` or `SKILL.md`, silently skips those that fail to load, and sorts by id. A missing root lists as empty. Use `skill show <id>` to see the load error for a skill that is missing from the list.
+`list_installed_skills` scans the root's direct subdirectories that hold `artifact.json` or `SKILL.md`, skips those that fail to load, and sorts by id. A missing root lists as empty.
 
-<sub>Sources: [runtime.rs:727-787](../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1093-1110](../crates/skrun/src/runtime.rs#L1093-L1110) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
+<sub>Sources: [runtime.rs:727-787](../crates/skrun/src/runtime.rs#L727-L787) · [runtime.rs:1096-1113](../crates/skrun/src/runtime.rs#L1096-L1113) · [runtime.rs:760-766](../crates/skrun/src/runtime.rs#L760-L766)</sub>
 
 ## The Python boundary
 
-`skrun-native` exposes five functions (`runtime_load_artifact_json`, `runtime_list_skills_json`, `runtime_build_skill_json`, `runtime_run_skill_json`, `runtime_install_local_skill_json`). Each takes strings and returns a JSON string, so the ABI is just serde JSON and the Python dataclasses mirror the Rust structs. Each call runs inside `py.detach`, which releases the GIL while a build or skill process runs, so other Python threads keep working. Rust errors become `RuntimeError` and the SDK rewraps them as `SkillRuntimeError`. For list and install, an empty or missing `root` falls back to `default_skills_dir`; load, build and run need an explicit `root`. Builds from Python always use the default Cargo/uv commands and release profile; only `target_dir` is configurable.
+`skrun-native` exposes five functions (`runtime_load_artifact_json`, `runtime_list_skills_json`, `runtime_build_skill_json`, `runtime_run_skill_json`, `runtime_install_local_skill_json`). Each takes strings and returns a JSON string that the Python dataclasses mirror. Each call runs inside `py.detach`, which releases the GIL while a build or skill process runs. Rust errors become `RuntimeError` and the SDK rewraps them as `SkillRuntimeError`. For list and install, an empty or missing `root` falls back to `default_skills_dir`; load, build and run need an explicit `root`. Builds from Python always use the default Cargo/uv commands and release profile; only `target_dir` is configurable.
 
 <sub>Sources: [lib.rs:39-151](../crates/py/src/lib.rs#L39-L151) · [skill.py:316-331](../python/skrun/skill.py#L316-L331)</sub>
 
@@ -79,4 +79,10 @@ Both build steps capture output and report only stderr on failure. `markdown` sk
 
 `reconcile_registry` edits only the `| Skill | When to read | Entrypoint |` table of the curated `SKILL_REGISTRY.md`, outside fenced code (backtick or `~~~`, closed only in the opening container: top level, list item or quote; a backticked info string means inline code). Valid rows stay verbatim and ordered; rows with a missing, non-skill or repeated entrypoint go; unlisted skills get `| name | summary | [id](entrypoint) |` (description's first sentence, ≤160 characters). Cells honour `\|` and `\\`; paths with parentheses, spaces, `<` or `>` use `[id](<path>)`. Separators, other lines and endings stay; with no table it fails unwritten. Known gaps: ordered-list fences closed at 4+ spaces stay open (`registry` then finds no table), reversed list/quote nesting may close one early, `>` paths don't round-trip.
 
-<sub>Sources: [catalog.rs:12-16](../crates/skrun/src/catalog.rs#L12-L16) · [catalog.rs:403-435](../crates/skrun/src/catalog.rs#L403-L435) · [catalog.rs:464-568](../crates/skrun/src/catalog.rs#L464-L568) · [catalog.rs:1305-1348](../crates/skrun/src/catalog.rs#L1305-L1348) · [catalog.rs:845-893](../crates/skrun/src/catalog.rs#L845-L893) · +6</sub>
+<sub>Sources: [catalog.rs:14-18](../crates/skrun/src/catalog.rs#L14-L18) · [catalog.rs:420-452](../crates/skrun/src/catalog.rs#L420-L452) · [catalog.rs:481-585](../crates/skrun/src/catalog.rs#L481-L585) · [catalog.rs:2039-2082](../crates/skrun/src/catalog.rs#L2039-L2082) · [catalog.rs:1332-1365](../crates/skrun/src/catalog.rs#L1332-L1365) · +6</sub>
+
+## How search ranks
+
+`search_skills` lowercases each whitespace-separated term and matches it as a substring, so Chinese needs no segmentation. Every term must hit a field (AND) and adds the weight of each field it hits: id 5, frontmatter name 4, registry title 4, registry summary, description and each tag 3, entrypoint body 1. Results sort by score, then id; `--has-scripts` drops flat skills. A result shows the registry title (else the name) and the registry summary (else the description's first sentence: up to `. `, `? `, `! `, `。`, `？`, `！` or a newline, ≤120 characters), redacted before the cut so a secret never prints in part.
+
+<sub>Sources: [catalog.rs:714-738](../crates/skrun/src/catalog.rs#L714-L738) · [catalog.rs:785-861](../crates/skrun/src/catalog.rs#L785-L861) · [catalog.rs:901-955](../crates/skrun/src/catalog.rs#L901-L955) · [catalog.rs:1013-1051](../crates/skrun/src/catalog.rs#L1013-L1051) · [catalog.rs:75-87](../crates/skrun/src/catalog.rs#L75-L87)</sub>

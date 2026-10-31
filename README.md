@@ -157,6 +157,15 @@ cargo run -p skrun -- catalog registry skills --write
 
 # frontmatter, links, registry, stale index, possible secrets; exits 1 on errors
 cargo run -p skrun -- catalog check skills
+
+# rank skills by keyword (every term must match); exits 1 when nothing matches
+cargo run -p skrun -- catalog search skills regex --limit 5
+
+# copy an external skill into the read-only store and scan it; never runs it
+cargo run -p skrun -- catalog add ./downloaded-skill --from https://example.com/skill.zip
+
+# print the stored versions, findings and suggested tier of one skill
+cargo run -p skrun -- catalog inspect downloaded-skill
 ```
 
 ## Agent Framework Examples

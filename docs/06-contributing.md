@@ -4,7 +4,7 @@ title: Contributing
 
 # Contributing
 
-<sub>**English** · [中文](zh/05-contributing.md)</sub>
+<sub>**English** · [中文](zh/06-contributing.md)</sub>
 
 The Cargo workspace has two members: `crates/skrun` (default member: runtime library and CLI) and `crates/py` (`skrun-native`). PyO3 is behind the optional `python-module` feature, so `cargo build` and `cargo test` at the root never need a Python interpreter; only maturin and the native checks enable it. The module map is in [Code structure](structure.md).
 
@@ -48,4 +48,4 @@ A new kind touches every `match` on `ArtifactKind` in `runtime.rs`: `validate`, 
 
 The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must Not`, `Inputs`, `Outputs`, `Depends On`, `Verify`). Update it when you move responsibility, and respect the `Must Not` lists: the runtime does not plan, parse `@skill` mentions, render UI or hold durable state. New operations belong in `runtime.rs` first and are then exposed through `main.rs` and `crates/py/src/lib.rs`, never implemented in Python.
 
-<sub>Sources: [runtime.rs:55-61](../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:577-606](../crates/skrun/src/main.rs#L577-L606) · [runtime.rs:3-17](../crates/skrun/src/runtime.rs#L3-L17)</sub>
+<sub>Sources: [runtime.rs:55-61](../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:939-968](../crates/skrun/src/main.rs#L939-L968) · [runtime.rs:3-17](../crates/skrun/src/runtime.rs#L3-L17)</sub>
