@@ -130,14 +130,9 @@ fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Command::Catalog(CatalogCommand::Registry(options)) => {
-            let registry = options
-                .registry
-                .clone()
-                .unwrap_or_else(|| options.dir.join(catalog::REGISTRY_FILE));
-            let report = catalog::reconcile_registry(&options.dir, &registry, options.write)?;
-            print!("{}", report.render());
-            if report.out_of_sync() {
-                std::process::exit(1);
+            let code = run_catalog_registry(&options)?;
+            if code != 0 {
+                std::process::exit(code);
             }
             Ok(())
         }
@@ -508,6 +503,25 @@ fn parse_catalog_check(mut cursor: Cursor) -> Result<CatalogCheckCommand> {
     })
 }
 
+/// Run the `catalog registry` command and return its exit status.
+///
+/// The report is printed as it is; the status follows the mode. A dry run
+/// fails when the registry table drifted so a stale table is noticed. A write
+/// run already repaired the table, so it succeeds and only a real error, such
+/// as a registry file that cannot be read or written, fails the command.
+///
+/// A registry file without the registry table is a real error as well: the
+/// command fails with a clear message and the file stays untouched.
+fn run_catalog_registry(options: &CatalogRegistryCommand) -> Result<i32> {
+    let registry = options
+        .registry
+        .clone()
+        .unwrap_or_else(|| options.dir.join(catalog::REGISTRY_FILE));
+    let report = catalog::reconcile_registry(&options.dir, &registry, options.write)?;
+    print!("{}", report.render());
+    Ok(report.exit_code(options.write))
+}
+
 /// Render the output of the `catalog index` command.
 ///
 /// Without `--out` the rendered index is returned for printing. With `--out`
@@ -787,6 +801,131 @@ mod tests {
 
         assert!(printed.is_none());
         assert!(out.is_file());
+    }
+
+    #[test]
+    fn catalog_registry_dry_run_fails_when_the_table_drifted() {
+        let dir = drifted_registry_fixture("catalog-registry-dry-run");
+
+        let code = run_catalog_registry(&CatalogRegistryCommand {
+            dir: dir.clone(),
+            registry: None,
+            write: false,
+        })
+        .unwrap();
+
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn catalog_registry_write_succeeds_after_fixing_the_table() {
+        let dir = drifted_registry_fixture("catalog-registry-write");
+
+        let code = run_catalog_registry(&CatalogRegistryCommand {
+            dir: dir.clone(),
+            registry: None,
+            write: true,
+        })
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let code = run_catalog_registry(&CatalogRegistryCommand {
+            dir: dir.clone(),
+            registry: None,
+            write: false,
+        })
+        .unwrap();
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn catalog_registry_dry_run_fails_when_the_table_is_missing() {
+        let dir = registry_without_table_fixture("catalog-registry-no-table-dry-run");
+
+        let error = run_catalog_registry(&CatalogRegistryCommand {
+            dir: dir.clone(),
+            registry: None,
+            write: false,
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("has no `| Skill | When to read | Entrypoint |` table")
+        );
+    }
+
+    #[test]
+    fn catalog_registry_write_fails_when_the_table_is_missing() {
+        let dir = registry_without_table_fixture("catalog-registry-no-table-write");
+        let registry = dir.join(catalog::REGISTRY_FILE);
+        let before = fs::read(&registry).unwrap();
+
+        let error = run_catalog_registry(&CatalogRegistryCommand {
+            dir: dir.clone(),
+            registry: None,
+            write: true,
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("has no `| Skill | When to read | Entrypoint |` table")
+        );
+        assert_eq!(fs::read(&registry).unwrap(), before);
+    }
+
+    #[test]
+    fn catalog_registry_fails_when_the_registry_cannot_be_read() {
+        let dir = drifted_registry_fixture("catalog-registry-read-error");
+        let registry = dir.join(catalog::REGISTRY_FILE);
+        fs::remove_file(&registry).unwrap();
+        fs::create_dir(&registry).unwrap();
+
+        let error = run_catalog_registry(&CatalogRegistryCommand {
+            dir,
+            registry: None,
+            write: true,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("read registry"));
+    }
+
+    fn registry_without_table_fixture(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        write(
+            &dir.join(catalog::REGISTRY_FILE),
+            concat!("# Skills\n", "\n", "The registry table is missing.\n",),
+        );
+        dir
+    }
+
+    fn drifted_registry_fixture(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        write(
+            &dir.join(catalog::REGISTRY_FILE),
+            concat!(
+                "# Skills\n",
+                "\n",
+                "| Skill | When to read | Entrypoint |\n",
+                "| --- | --- | --- |\n",
+                "| Ghost | When ghosting | [ghost](ghost/SKILL.md) |\n",
+                "\n",
+                "Trailing text.\n"
+            ),
+        );
+        dir
     }
 
     #[test]

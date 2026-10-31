@@ -11,6 +11,7 @@
 //! ## Must Not
 //! - execute skills
 //! - mutate skill payloads
+//! - create a registry table that is not there
 //! - call git or the network
 //!
 //! ## Inputs
@@ -20,6 +21,8 @@
 //! ## Outputs
 //! - JSON catalog index
 //! - registry drift report
+//! - registry command exit status
+//! - registry table error
 //! - catalog check findings
 //!
 //! ## Depends On
@@ -28,7 +31,7 @@
 //! ## Verify
 //! - cargo test -p skrun
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -179,6 +182,23 @@ impl RegistryReport {
             || !self.removed.is_empty()
             || !self.duplicates.is_empty()
             || !self.missing.is_empty()
+    }
+
+    /// Exit status of the `catalog registry` command for this report.
+    ///
+    /// A dry run reports drift as a failure so a stale table is noticed. A
+    /// write run repaired the table already, so it succeeds; only a real
+    /// error, such as a registry file that cannot be read or written, ends
+    /// the command with a non-zero status.
+    pub fn exit_code(&self, write: bool) -> i32 {
+        if write {
+            // The table was repaired, so the command succeeded.
+            0
+        } else if self.out_of_sync() {
+            1
+        } else {
+            0
+        }
     }
 
     /// Human readable summary of the drift.
@@ -420,62 +440,78 @@ pub fn write_index_file(path: &Path, text: &str) -> Result<()> {
 /// Without `write` the registry file is never touched and only the drift is
 /// reported. With `write` stale and duplicate rows are dropped and rows for
 /// missing skills are appended; everything outside the table is preserved.
+///
+/// A registry file without the registry table is an error: the rows have no
+/// place to go, so the file is left exactly as it is.
 pub fn reconcile_registry(dir: &Path, registry: &Path, write: bool) -> Result<RegistryReport> {
     let skills = discover_skills(dir)?;
+    let content = read_registry(registry)?;
+    let document = RegistryDocument::parse(&content);
+    reconcile_document(dir, registry, &document, &skills, write)
+}
+
+/// Reconcile the parsed registry document with the discovered skills.
+///
+/// The registry table has to be there; a document without it is an error and
+/// the registry file is never written.
+fn reconcile_document(
+    dir: &Path,
+    registry: &Path,
+    document: &RegistryDocument,
+    skills: &[Skill],
+    write: bool,
+) -> Result<RegistryReport> {
+    let Some((header, start, end)) = document.table() else {
+        bail!(
+            "registry `{}` has no `{}` table",
+            registry.display(),
+            REGISTRY_HEADER
+        );
+    };
+
     let mut by_entrypoint: BTreeMap<String, &Skill> = BTreeMap::new();
-    for skill in &skills {
+    for skill in skills {
         by_entrypoint.insert(path_to_string(&skill.entrypoint), skill);
     }
 
-    let content = match fs::read_to_string(registry) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => {
-            return Err(error).with_context(|| format!("read registry `{}`", registry.display()));
-        }
-    };
-
-    let document = RegistryDocument::parse(&content);
     let mut removed = Vec::new();
     let mut duplicates = Vec::new();
     let mut kept = Vec::new();
     let mut kept_rows: Vec<Line> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
 
-    if let (Some(start), Some(end)) = (document.data_start, document.data_end) {
-        for line in &document.lines[start..end] {
-            let cells = parse_cells(&line.text);
-            let Some(cell) = cells.get(2) else {
-                removed.push(StaleRow {
-                    entrypoint: line.text.trim().to_string(),
-                    reason: "missing entrypoint cell",
-                });
-                continue;
+    for line in &document.lines[start..end] {
+        let cells = parse_cells(&line.text);
+        let Some(cell) = cells.get(2) else {
+            removed.push(StaleRow {
+                entrypoint: line.text.trim().to_string(),
+                reason: "missing entrypoint cell",
+            });
+            continue;
+        };
+        let Some(raw) = extract_link_path(cell) else {
+            removed.push(StaleRow {
+                entrypoint: cell.clone(),
+                reason: "invalid entrypoint cell",
+            });
+            continue;
+        };
+        let entrypoint = path_to_string(&normalize_relative(Path::new(&raw)));
+        if !by_entrypoint.contains_key(&entrypoint) {
+            let reason = if dir.join(&entrypoint).exists() {
+                "not a skill"
+            } else {
+                "file missing"
             };
-            let Some(raw) = extract_link_path(cell) else {
-                removed.push(StaleRow {
-                    entrypoint: cell.clone(),
-                    reason: "invalid entrypoint cell",
-                });
-                continue;
-            };
-            let entrypoint = path_to_string(&normalize_relative(Path::new(&raw)));
-            if !by_entrypoint.contains_key(&entrypoint) {
-                let reason = if dir.join(&entrypoint).exists() {
-                    "not a skill"
-                } else {
-                    "file missing"
-                };
-                removed.push(StaleRow { entrypoint, reason });
-                continue;
-            }
-            if !seen.insert(entrypoint.clone()) {
-                duplicates.push(entrypoint);
-                continue;
-            }
-            kept.push(entrypoint);
-            kept_rows.push(line.clone());
+            removed.push(StaleRow { entrypoint, reason });
+            continue;
         }
+        if !seen.insert(entrypoint.clone()) {
+            duplicates.push(entrypoint);
+            continue;
+        }
+        kept.push(entrypoint);
+        kept_rows.push(line.clone());
     }
 
     let missing: Vec<MissingRow> = skills
@@ -498,7 +534,7 @@ pub fn reconcile_registry(dir: &Path, registry: &Path, write: bool) -> Result<Re
                     .map(registry_row)
             })
             .collect();
-        write_registry(&document, &kept_rows, &rows, registry)?;
+        write_registry(document, (header, start, end), &kept_rows, &rows, registry)?;
     }
 
     Ok(RegistryReport {
@@ -571,12 +607,20 @@ pub fn check_catalog(
     if let Some(path) = registry_path {
         let label = display_path(dir, &path);
         if path.exists() {
-            let report = reconcile_registry(dir, &path, false)?;
-            if report.out_of_sync() {
+            let content = read_registry(&path)?;
+            let document = RegistryDocument::parse(&content);
+            if document.table().is_none() {
                 findings.push(Finding::error(format!(
-                    "registry `{label}` is out of sync ({})",
-                    report.drift_summary()
+                    "registry `{label}` has no `{REGISTRY_HEADER}` table"
                 )));
+            } else {
+                let report = reconcile_document(dir, &path, &document, &skills, false)?;
+                if report.out_of_sync() {
+                    findings.push(Finding::error(format!(
+                        "registry `{label}` is out of sync ({})",
+                        report.drift_summary()
+                    )));
+                }
             }
         } else {
             findings.push(Finding::error(format!("registry `{label}` is missing")));
@@ -1148,6 +1192,24 @@ impl RegistryDocument {
             data_end,
         }
     }
+
+    /// The header row index, the first data row index and the end of the
+    /// table, when the registry table is present.
+    fn table(&self) -> Option<(usize, usize, usize)> {
+        match (self.header, self.data_start, self.data_end) {
+            (Some(header), Some(start), Some(end)) => Some((header, start, end)),
+            _ => None,
+        }
+    }
+}
+
+/// Read the registry file; a missing file reads as empty content.
+fn read_registry(registry: &Path) -> Result<String> {
+    match fs::read_to_string(registry) {
+        Ok(content) => Ok(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error).with_context(|| format!("read registry `{}`", registry.display())),
+    }
 }
 
 fn split_lines(content: &str) -> Vec<Line> {
@@ -1203,57 +1265,31 @@ fn extract_link_path(cell: &str) -> Option<String> {
     Some(rest[..end].trim().to_string())
 }
 
+/// Rewrite the registry file with the kept rows and the appended rows.
+///
+/// Only the table between the header row and the end of the table changes;
+/// every other line keeps its bytes.
 fn write_registry(
     document: &RegistryDocument,
+    table: (usize, usize, usize),
     kept_rows: &[Line],
     appended: &[String],
     registry: &Path,
 ) -> Result<()> {
+    let (header, start, end) = table;
     let ending = detect_ending(&document.lines);
     let mut lines: Vec<Line> = Vec::new();
 
-    match (document.header, document.data_start, document.data_end) {
-        (Some(header), Some(start), Some(end)) => {
-            lines.extend(document.lines[..header].iter().cloned());
-            lines.extend(document.lines[header..start].iter().cloned());
-            lines.extend(kept_rows.iter().cloned());
-            for row in appended {
-                lines.push(Line {
-                    text: row.clone(),
-                    ending: ending.clone(),
-                });
-            }
-            lines.extend(document.lines[end..].iter().cloned());
-        }
-        _ => {
-            lines.extend(document.lines.iter().cloned());
-            if let Some(last) = lines.last_mut()
-                && last.ending.is_empty()
-            {
-                last.ending = ending.clone();
-            }
-            if !lines.is_empty() {
-                lines.push(Line {
-                    text: String::new(),
-                    ending: ending.clone(),
-                });
-            }
-            lines.push(Line {
-                text: REGISTRY_HEADER.to_string(),
-                ending: ending.clone(),
-            });
-            lines.push(Line {
-                text: REGISTRY_SEPARATOR.to_string(),
-                ending: ending.clone(),
-            });
-            for row in appended {
-                lines.push(Line {
-                    text: row.clone(),
-                    ending: ending.clone(),
-                });
-            }
-        }
+    lines.extend(document.lines[..header].iter().cloned());
+    lines.extend(document.lines[header..start].iter().cloned());
+    lines.extend(kept_rows.iter().cloned());
+    for row in appended {
+        lines.push(Line {
+            text: row.clone(),
+            ending: ending.clone(),
+        });
     }
+    lines.extend(document.lines[end..].iter().cloned());
 
     let mut content = String::new();
     let last = lines.len().saturating_sub(1);
@@ -1536,6 +1572,47 @@ mod tests {
     }
 
     #[test]
+    fn registry_without_the_table_is_an_error() {
+        let dir = temp_dir("registry-no-table");
+        write(&dir.join("demo/SKILL.md"), "# Demo\n");
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            concat!("# Skills\n", "\n", "The registry table is missing.\n",),
+        );
+        let before = fs::read(&registry).unwrap();
+
+        let error = reconcile_registry(&dir, &registry, true).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("has no `| Skill | When to read | Entrypoint |` table")
+        );
+        assert_eq!(fs::read(&registry).unwrap(), before);
+    }
+
+    #[test]
+    fn registry_exit_code_follows_the_command_mode() {
+        let dir = fixture("registry-exit-code");
+        let registry = dir.join(REGISTRY_FILE);
+
+        let drifted = reconcile_registry(&dir, &registry, false).unwrap();
+        assert!(drifted.out_of_sync());
+        assert_eq!(drifted.exit_code(false), 1);
+        assert_eq!(drifted.exit_code(true), 0);
+
+        let written = reconcile_registry(&dir, &registry, true).unwrap();
+        assert!(written.updated);
+        assert_eq!(written.exit_code(true), 0);
+
+        let repaired = reconcile_registry(&dir, &registry, false).unwrap();
+        assert!(!repaired.out_of_sync());
+        assert_eq!(repaired.exit_code(false), 0);
+        assert_eq!(repaired.exit_code(true), 0);
+    }
+
+    #[test]
     fn registry_missing_rows_use_the_skill_that_owns_the_entrypoint() {
         let dir = temp_dir("registry-missing");
         write(&dir.join("foo.md"), "# Foo\n");
@@ -1675,6 +1752,27 @@ mod tests {
         assert!(text.contains("error: index is stale; run skrun catalog index"));
         assert!(!text.contains(SECRET));
         assert!(text.contains("checked 3 skills:"));
+    }
+
+    #[test]
+    fn check_reports_a_registry_without_the_table() {
+        let dir = temp_dir("check-no-table");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        write(
+            &dir.join(REGISTRY_FILE),
+            concat!("# Skills\n", "\n", "The registry table is missing.\n",),
+        );
+
+        let report = check_catalog(&dir, None, None).unwrap();
+        let text = report.render();
+
+        assert!(report.has_errors());
+        assert!(text.contains(
+            "registry `SKILL_REGISTRY.md` has no `| Skill | When to read | Entrypoint |` table"
+        ));
     }
 
     #[test]
