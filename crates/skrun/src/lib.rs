@@ -3,6 +3,7 @@
 //! This crate is intentionally self-contained so downstream projects can depend
 //! on `skrun` from crates.io without pulling the internal workspace crates.
 
+pub mod catalog;
 pub mod runtime;
 
 pub use runtime::{

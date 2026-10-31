@@ -7,6 +7,7 @@
 //! - skill artifact build command
 //! - skill artifact run command
 //! - local skill install and list commands
+//! - catalog index, registry and check commands
 //!
 //! ## Must Not
 //! - start the legacy daemon
@@ -31,6 +32,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+use skrun::catalog;
 use skrun::{
     ArtifactKind, BuildOptions, InstallOptions, RunOptions, ScaffoldOptions, build_skill,
     default_skills_dir, install_local_skill, list_installed_skills, load_artifact, run_skill,
@@ -38,7 +40,7 @@ use skrun::{
 };
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn main() {
@@ -120,6 +122,37 @@ fn run(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
+        Command::Catalog(CatalogCommand::Index(options)) => {
+            let index = catalog::build_index(&options.dir)?;
+            if let Some(rendered) = catalog_index_output(&index, options.out.as_deref())? {
+                print!("{rendered}");
+            }
+            Ok(())
+        }
+        Command::Catalog(CatalogCommand::Registry(options)) => {
+            let registry = options
+                .registry
+                .clone()
+                .unwrap_or_else(|| options.dir.join(catalog::REGISTRY_FILE));
+            let report = catalog::reconcile_registry(&options.dir, &registry, options.write)?;
+            print!("{}", report.render());
+            if report.out_of_sync() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Command::Catalog(CatalogCommand::Check(options)) => {
+            let report = catalog::check_catalog(
+                &options.dir,
+                options.registry.as_deref(),
+                options.index.as_deref(),
+            )?;
+            print!("{}", report.render());
+            if report.has_errors() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -127,6 +160,7 @@ fn run(args: Vec<String>) -> Result<()> {
 enum Command {
     Help,
     Skill(SkillCommand),
+    Catalog(CatalogCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +171,13 @@ enum SkillCommand {
     InstallLocal(InstallLocalCommand),
     List(ListCommand),
     Show(ShowCommand),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum CatalogCommand {
+    Index(CatalogIndexCommand),
+    Registry(CatalogRegistryCommand),
+    Check(CatalogCheckCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,6 +224,26 @@ struct ShowCommand {
     format: OutputFormat,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogIndexCommand {
+    dir: PathBuf,
+    out: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogRegistryCommand {
+    dir: PathBuf,
+    registry: Option<PathBuf>,
+    write: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogCheckCommand {
+    dir: PathBuf,
+    registry: Option<PathBuf>,
+    index: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
     Text,
@@ -196,6 +257,7 @@ fn parse(args: Vec<String>) -> Result<Command> {
     let mut cursor = Cursor::new(args);
     match cursor.next_required("command")?.as_str() {
         "skill" => parse_skill(cursor).map(Command::Skill),
+        "catalog" => parse_catalog(cursor).map(Command::Catalog),
         other => bail!("unknown command `{other}`"),
     }
 }
@@ -373,6 +435,98 @@ fn parse_skill_show(mut cursor: Cursor) -> Result<ShowCommand> {
     })
 }
 
+fn parse_catalog(mut cursor: Cursor) -> Result<CatalogCommand> {
+    match cursor.next_required("catalog command")?.as_str() {
+        "index" => parse_catalog_index(cursor).map(CatalogCommand::Index),
+        "registry" => parse_catalog_registry(cursor).map(CatalogCommand::Registry),
+        "check" => parse_catalog_check(cursor).map(CatalogCommand::Check),
+        other => bail!("unknown catalog command `{other}`"),
+    }
+}
+
+fn parse_catalog_index(mut cursor: Cursor) -> Result<CatalogIndexCommand> {
+    let mut out = None;
+    let mut dir = None;
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--out" => out = Some(PathBuf::from(cursor.next_required("--out value")?)),
+            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value => dir = Some(PathBuf::from(value)),
+        }
+    }
+
+    Ok(CatalogIndexCommand {
+        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skills directory"))?,
+        out,
+    })
+}
+
+fn parse_catalog_registry(mut cursor: Cursor) -> Result<CatalogRegistryCommand> {
+    let mut registry = None;
+    let mut write = false;
+    let mut dir = None;
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--registry" => {
+                registry = Some(PathBuf::from(cursor.next_required("--registry value")?))
+            }
+            "--write" => write = true,
+            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value => dir = Some(PathBuf::from(value)),
+        }
+    }
+
+    Ok(CatalogRegistryCommand {
+        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skills directory"))?,
+        registry,
+        write,
+    })
+}
+
+fn parse_catalog_check(mut cursor: Cursor) -> Result<CatalogCheckCommand> {
+    let mut registry = None;
+    let mut index = None;
+    let mut dir = None;
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--registry" => {
+                registry = Some(PathBuf::from(cursor.next_required("--registry value")?))
+            }
+            "--index" => index = Some(PathBuf::from(cursor.next_required("--index value")?)),
+            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value => dir = Some(PathBuf::from(value)),
+        }
+    }
+
+    Ok(CatalogCheckCommand {
+        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skills directory"))?,
+        registry,
+        index,
+    })
+}
+
+/// Render the output of the `catalog index` command.
+///
+/// Without `--out` the rendered index is returned for printing. With `--out`
+/// the index is written to the file and nothing is printed, so the given path
+/// never shows up in the command output.
+fn catalog_index_output(
+    index: &catalog::CatalogIndex,
+    out: Option<&Path>,
+) -> Result<Option<String>> {
+    let rendered = catalog::render_index(index)?;
+    match out {
+        Some(path) => {
+            catalog::write_index_file(path, &rendered)?;
+            Ok(None)
+        }
+        None => Ok(Some(rendered)),
+    }
+}
+
 fn parse_kind(value: &str) -> Result<ArtifactKind> {
     match value {
         "markdown" | "guidance" => Ok(ArtifactKind::Markdown),
@@ -445,6 +599,9 @@ fn print_usage() {
   skrun skill install-local [--root <dir>] [--id <id>] [--overwrite] <dir>
   skrun skill list [--root <dir>] [--format text|json]
   skrun skill show [--root <dir>] [--format text|json] <id>
+  skrun catalog index <dir> [--out <file>]
+  skrun catalog registry <dir> [--registry <file>] [--write]
+  skrun catalog check <dir> [--registry <file>] [--index <file>]
 "#
     );
 }
@@ -452,6 +609,8 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_skill_new_command() {
@@ -558,6 +717,79 @@ mod tests {
     }
 
     #[test]
+    fn parses_catalog_index_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "index".to_string(),
+            "skills".to_string(),
+            "--out".to_string(),
+            "skills.json".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Index(command)) = command else {
+            panic!("expected catalog index command");
+        };
+        assert_eq!(command.dir, PathBuf::from("skills"));
+        assert_eq!(command.out, Some(PathBuf::from("skills.json")));
+    }
+
+    #[test]
+    fn parses_catalog_registry_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "registry".to_string(),
+            "--registry".to_string(),
+            "docs/REGISTRY.md".to_string(),
+            "--write".to_string(),
+            "skills".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Registry(command)) = command else {
+            panic!("expected catalog registry command");
+        };
+        assert_eq!(command.dir, PathBuf::from("skills"));
+        assert_eq!(command.registry, Some(PathBuf::from("docs/REGISTRY.md")));
+        assert!(command.write);
+    }
+
+    #[test]
+    fn parses_catalog_check_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "check".to_string(),
+            "--index".to_string(),
+            "skills.json".to_string(),
+            "skills".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Check(command)) = command else {
+            panic!("expected catalog check command");
+        };
+        assert_eq!(command.dir, PathBuf::from("skills"));
+        assert_eq!(command.index, Some(PathBuf::from("skills.json")));
+        assert_eq!(command.registry, None);
+    }
+
+    #[test]
+    fn catalog_index_with_out_prints_nothing() {
+        let dir = temp_dir("catalog-index-out");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let index = catalog::build_index(&dir).unwrap();
+        let out = dir.join("skills.json");
+
+        let printed = catalog_index_output(&index, Some(&out)).unwrap();
+
+        assert!(printed.is_none());
+        assert!(out.is_file());
+    }
+
+    #[test]
     fn parses_skill_show_json_format() {
         let command = parse(vec![
             "skill".to_string(),
@@ -576,5 +808,23 @@ mod tests {
         assert_eq!(command.root, PathBuf::from("installed"));
         assert_eq!(command.id, "team");
         assert_eq!(command.format, OutputFormat::Json);
+    }
+
+    fn write(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, text).unwrap();
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("skrun-main-{name}-{}-{now}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        root
     }
 }
