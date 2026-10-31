@@ -15,6 +15,7 @@
 //! - the content hash of a staged skill
 //! - the read-only copy of a stored skill
 //! - the threat record of every added version
+//! - the risk rules of the scan and the tier they suggest
 //! - the lock of a skill id while it is added
 //!
 //! ## Must Not
@@ -34,6 +35,7 @@
 //! - a store summary
 //!
 //! ## Depends On
+//! - regex
 //! - serde_json
 //! - sha2
 //! - zip
@@ -42,11 +44,13 @@
 //! - cargo test -p skrun
 
 use crate::catalog;
+use crate::risk;
 use crate::runtime::validate_id;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -102,9 +106,9 @@ const BINARY_MAGICS: [&[u8]; 7] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
-    /// A value that looks like a secret.
+    /// A rule that found something that must not run.
     High,
-    /// A payload that does not belong in a text skill.
+    /// A rule that found something that needs a look.
     Medium,
     /// A hint that needs a look.
     Low,
@@ -116,6 +120,71 @@ fn severity_name(severity: Severity) -> &'static str {
         Severity::High => "high",
         Severity::Medium => "medium",
         Severity::Low => "low",
+    }
+}
+
+/// The sandbox tier that the risk scan suggests for a skill.
+///
+/// The tier says how much room a skill needs. A skill with a high finding
+/// never runs outside a microVM, a skill with a script that reaches outside
+/// of the process runs in a container, a skill that touches the file system
+/// runs in a sandbox and a skill that only computes runs in a plain process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Tier {
+    /// A high finding: never run outside a microVM.
+    L3,
+    /// A script that is not python or that reaches outside of the process.
+    L2,
+    /// A script that touches the file system.
+    L1,
+    /// A script that only computes.
+    L0,
+    /// No script at all: the skill is guidance and nothing to run.
+    #[default]
+    #[serde(rename = "none")]
+    None,
+}
+
+impl Tier {
+    /// The name of the tier, as it is printed and as it is stored.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Tier::L3 => "L3",
+            Tier::L2 => "L2",
+            Tier::L1 => "L1",
+            Tier::L0 => "L0",
+            Tier::None => "none",
+        }
+    }
+}
+
+impl std::fmt::Display for Tier {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<Tier> for String {
+    fn from(tier: Tier) -> String {
+        tier.as_str().to_string()
+    }
+}
+
+impl PartialEq<Tier> for String {
+    fn eq(&self, other: &Tier) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<String> for Tier {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<&str> for Tier {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
     }
 }
 
@@ -166,6 +235,12 @@ pub struct StoredVersion {
     pub scripts: Vec<StoredScript>,
     /// The findings of the threat scan.
     pub findings: Vec<Finding>,
+    /// The tier that the risk scan suggests for the version.
+    #[serde(default)]
+    pub tier: Tier,
+    /// The reasons of the tier.
+    #[serde(default)]
+    pub tier_reasons: Vec<String>,
 }
 
 /// The threat record of one skill id.
@@ -186,6 +261,8 @@ pub struct StoreSummary {
     pub id: String,
     /// The hash of the newest version.
     pub hash: String,
+    /// The tier that the newest version suggests.
+    pub tier: Tier,
     /// The number of high findings of the newest version.
     pub high: u64,
     /// The number of medium findings of the newest version.
@@ -214,6 +291,8 @@ pub struct AddResult {
     pub id: String,
     /// Whether the very same content was already stored.
     pub already_stored: bool,
+    /// Whether the record of the stored version was refreshed.
+    pub refreshed: bool,
     /// The version of the skill.
     pub version: StoredVersion,
 }
@@ -258,7 +337,11 @@ pub fn record_path(root: &Path, id: &str) -> PathBuf {
 /// name the skill shows under.
 ///
 /// A skill with the very same content is already stored, so it is not copied
-/// a second time and no second version is written. A stored copy whose
+/// a second time and no second version is written. The record of a stored
+/// version is refreshed with the findings, the tier and the reasons of the
+/// tier of a fresh scan, so a record that was written by an older rule holds
+/// the findings of today. The hash, the source and the time of the version
+/// stay the same, because the content did not change. A stored copy whose
 /// version is missing from the record repairs the record instead.
 pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
     let root = resolve_store_root(options.store.as_deref())?;
@@ -304,7 +387,13 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
     let _lock = Lock::acquire(&root, &id)?;
 
     let (hash, full_hash, files, bytes) = content_hash(&skill_root)?;
-    let (scripts, mut findings) = scan_skill(&skill_root)?;
+    let scan = scan_skill(&skill_root)?;
+    let Scan {
+        scripts,
+        findings: scanned,
+        opens_file,
+    } = scan;
+    let mut findings = scanned;
     let prefix = skill_prefix(&skill_root, &staging.path);
     for link in links {
         let Some(path) = strip_prefix(&link, &prefix) else {
@@ -323,6 +412,7 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
             .then_with(|| left.path.cmp(&right.path))
             .then_with(|| left.line.cmp(&right.line))
     });
+    let (tier, tier_reasons) = suggest_tier(&scripts, opens_file, &findings);
 
     let version = StoredVersion {
         hash: hash.clone(),
@@ -333,54 +423,65 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
         bytes,
         name: frontmatter.name.as_deref().map(catalog::redact),
         description: frontmatter.description.as_deref().map(catalog::redact),
-        scripts,
+        scripts: scripts
+            .iter()
+            .map(|scanned| scanned.script.clone())
+            .collect(),
         findings,
+        tier,
+        tier_reasons,
     };
 
     let skills_root = root.join("skills");
     let target = skills_root.join(&id).join(&hash);
-    if target.exists() {
-        let mut record = load_record(&root, &id)?;
-        if let Some(stored) = record
-            .versions
-            .iter()
-            .find(|stored| stored.hash == version.hash)
-            .cloned()
-        {
-            return Ok(AddResult {
-                id,
-                already_stored: true,
-                version: stored,
-            });
+    if !target.exists() {
+        fs::create_dir_all(skills_root.join(&id))
+            .with_context(|| format!("create `{}`", catalog::redact_path(&skills_root)))?;
+        store_copy(&skill_root, &skills_root.join(&id), &target)?;
+    }
+
+    let mut record = load_record(&root, &id)?;
+    let known = record
+        .versions
+        .iter()
+        .position(|stored| stored.hash == version.hash);
+    if let Some(index) = known {
+        // The content is already stored, so the record of the version is
+        // refreshed with the scripts, the findings, the tier and the reasons
+        // of the tier of the scan of today. A record that was written by an
+        // older rule holds the scripts and the findings of today after the
+        // refresh. The hash, the source and the time of the version stay the
+        // same, because the content did not change.
+        let stored = &mut record.versions[index];
+        let refreshed = stored.scripts != version.scripts
+            || stored.findings != version.findings
+            || stored.tier != version.tier
+            || stored.tier_reasons != version.tier_reasons;
+        if refreshed {
+            stored.scripts = version.scripts.clone();
+            stored.findings = version.findings.clone();
+            stored.tier = version.tier;
+            stored.tier_reasons = version.tier_reasons.clone();
+            write_record(&root, &id, &record)?;
         }
-        // The copy of the version is there, but the record lost it: the
-        // record is repaired instead of the version being stored again.
-        record.versions.push(version.clone());
-        write_record(&root, &id, &record)?;
+        let stored = record.versions[index].clone();
         return Ok(AddResult {
             id,
-            already_stored: false,
-            version,
+            already_stored: true,
+            refreshed,
+            version: stored,
         });
     }
 
-    fs::create_dir_all(skills_root.join(&id))
-        .with_context(|| format!("create `{}`", catalog::redact_path(&skills_root)))?;
-    store_copy(&skill_root, &skills_root.join(&id), &target)?;
-
-    let mut record = load_record(&root, &id)?;
-    if !record
-        .versions
-        .iter()
-        .any(|stored| stored.hash == version.hash)
-    {
-        record.versions.push(version.clone());
-        write_record(&root, &id, &record)?;
-    }
+    // The record lost the version of the copy that is there: the record is
+    // repaired instead of the version being stored again.
+    record.versions.push(version.clone());
+    write_record(&root, &id, &record)?;
 
     Ok(AddResult {
         id,
         already_stored: false,
+        refreshed: false,
         version,
     })
 }
@@ -471,6 +572,7 @@ pub fn list_records(root: &Path) -> Result<Vec<StoreSummary>> {
         summaries.push(StoreSummary {
             id: catalog::redact(&record.id),
             hash: catalog::redact(&version.hash),
+            tier: version.tier,
             high: count_findings(version, Severity::High),
             medium: count_findings(version, Severity::Medium),
             low: count_findings(version, Severity::Low),
@@ -544,13 +646,23 @@ pub fn render_record(record: &ThreatRecord) -> String {
             None => "unknown".to_string(),
         };
         text.push_str(&format!(
-            "  version {} from {} added {} files {} bytes {}\n",
+            "  version {} from {} added {} files {} bytes {} tier {}\n",
             catalog::redact(&version.hash),
             from,
             version.added_at,
             version.files,
-            version.bytes
+            version.bytes,
+            catalog::redact(version.tier.as_str())
         ));
+        if !version.tier_reasons.is_empty() {
+            let reasons = version
+                .tier_reasons
+                .iter()
+                .map(|reason| catalog::redact(reason))
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!("    tier reasons: {reasons}\n"));
+        }
         for script in &version.scripts {
             let imports = if script.imports.is_empty() {
                 "-".to_string()
@@ -569,17 +681,28 @@ pub fn render_record(record: &ThreatRecord) -> String {
                 imports
             ));
         }
-        for finding in &version.findings {
-            let location = match finding.line {
-                Some(line) => format!("{}:{}", catalog::redact(&finding.path), line),
-                None => catalog::redact(&finding.path),
-            };
-            text.push_str(&format!(
-                "    finding {} {} {}\n",
-                severity_name(finding.severity),
-                finding.rule,
-                location
-            ));
+        for severity in [Severity::High, Severity::Medium, Severity::Low] {
+            let group: Vec<&Finding> = version
+                .findings
+                .iter()
+                .filter(|finding| finding.severity == severity)
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
+            text.push_str(&format!("    {} findings:\n", severity_name(severity)));
+            for finding in group {
+                let location = match finding.line {
+                    Some(line) => format!("{}:{}", catalog::redact(&finding.path), line),
+                    None => catalog::redact(&finding.path),
+                };
+                text.push_str(&format!(
+                    "      finding {} {} {}\n",
+                    severity_name(finding.severity),
+                    finding.rule,
+                    location
+                ));
+            }
         }
     }
     text
@@ -590,9 +713,10 @@ pub fn render_summaries(summaries: &[StoreSummary]) -> String {
     let mut text = String::new();
     for summary in summaries {
         text.push_str(&format!(
-            "{}\t{}\thigh {}\tmedium {}\tlow {}\n",
+            "{}\t{}\ttier {}\thigh {}\tmedium {}\tlow {}\n",
             catalog::redact(&summary.id),
             catalog::redact(&summary.hash),
+            catalog::redact(summary.tier.as_str()),
             summary.high,
             summary.medium,
             summary.low
@@ -989,43 +1113,68 @@ fn content_hash(root: &Path) -> Result<(String, String, u64, u64)> {
     Ok((hash, full, files.len() as u64, bytes))
 }
 
+/// What the scan of a skill root found.
+struct Scan {
+    /// The scripts of the skill.
+    scripts: Vec<ScannedScript>,
+    /// The findings of the threat scan.
+    findings: Vec<Finding>,
+    /// Whether a python script of the skill opens a file.
+    opens_file: bool,
+}
+
+/// One script of a skill, with the modules of the skill itself.
+struct ScannedScript {
+    /// The script itself.
+    script: StoredScript,
+    /// The modules that the script can import from the skill itself.
+    local_modules: BTreeSet<String>,
+}
+
 /// The scripts and the findings of a skill root.
 ///
 /// The scripts are found the same way the catalog finds them, so a skill
 /// holds the same scripts in the store as in the index. The findings hold the
 /// place of a secret, never its value.
-fn scan_skill(root: &Path) -> Result<(Vec<StoredScript>, Vec<Finding>)> {
+fn scan_skill(root: &Path) -> Result<Scan> {
     let mut files = Vec::new();
     collect_files(root, "", &mut files)?;
     files.sort();
 
+    let modules = folder_modules(&files);
     let mut scripts = Vec::new();
     let mut findings = Vec::new();
+    let mut opens_file = false;
     for relative in &files {
         let content = fs::read(root.join(relative))
             .with_context(|| format!("read `{}`", catalog::redact(relative)))?;
+        let binary = is_binary(relative, &content);
+        let text = String::from_utf8_lossy(&content);
         if let Some(language) = catalog::script_language(Path::new(relative)) {
             let imports = if language == "python" {
-                match String::from_utf8(content.clone()) {
-                    Ok(text) => catalog::python_imports(&text)
-                        .iter()
-                        .map(|item| catalog::redact(item))
-                        .collect(),
-                    Err(_) => Vec::new(),
-                }
+                catalog::python_imports(&text)
+                    .iter()
+                    .map(|item| catalog::redact(item))
+                    .collect()
             } else {
                 Vec::new()
             };
-            scripts.push(StoredScript {
-                path: catalog::redact(relative),
-                language: language.to_string(),
-                imports,
+            if language == "python" && risk::calls_open(&text) {
+                opens_file = true;
+            }
+            scripts.push(ScannedScript {
+                script: StoredScript {
+                    path: catalog::redact(relative),
+                    language: language.to_string(),
+                    imports,
+                },
+                local_modules: local_modules(&modules, relative),
             });
         }
-        if is_binary(relative, &content) {
+        if binary {
             findings.push(Finding {
                 rule: "binary".to_string(),
-                severity: Severity::Medium,
+                severity: Severity::High,
                 path: catalog::redact(relative),
                 line: None,
             });
@@ -1038,14 +1187,245 @@ fn scan_skill(root: &Path) -> Result<(Vec<StoredScript>, Vec<Finding>)> {
             if catalog::line_has_secret(&line) {
                 findings.push(Finding {
                     rule: "secret".to_string(),
-                    severity: Severity::High,
+                    severity: Severity::Medium,
                     path: catalog::redact(relative),
                     line: Some(index as u64 + 1),
                 });
             }
         }
+        // The risk rules read the text of a file. A file that holds a binary
+        // payload and a file that is too big are left to the findings above.
+        if !binary && content.len() as u64 <= risk::MAX_SCAN_BYTES {
+            findings.extend(risk::scan_text(&catalog::redact(relative), &text));
+        }
     }
-    Ok((scripts, findings))
+    // A file of the skill that hides a module of the standard library is a
+    // finding of its own, because the interpreter runs the file of the
+    // skill where it would run the module of the standard library.
+    for path in shadowed_modules(&files) {
+        findings.push(Finding {
+            rule: "shadows_stdlib".to_string(),
+            severity: Severity::Medium,
+            path: catalog::redact(&path),
+            line: None,
+        });
+    }
+    Ok(Scan {
+        scripts,
+        findings,
+        opens_file,
+    })
+}
+
+/// The python modules of every folder of the skill.
+///
+/// The map holds, for every folder of the skill, the names of the modules
+/// that a script of that folder can import from the skill itself: the name
+/// of a python file of the folder, and the name of a folder of the folder
+/// that holds a python file of its own. A folder that holds only other
+/// files holds no module, so a skill that reads a folder of notes does not
+/// look like a skill that needs a package from the network.
+fn folder_modules(files: &[String]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut packages: BTreeSet<String> = BTreeSet::new();
+    for file in files {
+        let Some(stem) = name_of(file).strip_suffix(".py") else {
+            continue;
+        };
+        let folder = folder_of(file);
+        // A folder that holds a python file is a package of the skill.
+        packages.insert(folder.to_string());
+        if !stem.is_empty() && stem != "__init__" {
+            modules
+                .entry(folder.to_string())
+                .or_default()
+                .insert(stem.to_string());
+        }
+    }
+    for package in &packages {
+        if package.is_empty() {
+            continue;
+        }
+        let name = name_of(package);
+        if name.is_empty() {
+            continue;
+        }
+        modules
+            .entry(folder_of(package).to_string())
+            .or_default()
+            .insert(name.to_string());
+    }
+    modules
+}
+
+/// The modules that a script of the skill can import from the skill itself.
+///
+/// A module is local when a folder of the script holds a python file of that
+/// name, or a folder of that name that holds a python file of its own.
+/// Every folder above the script counts as well, up to the root of the
+/// skill, because the interpreter puts the folder of the entry script on the
+/// path of the modules: a script of `scripts/migrate` can import the package
+/// `utils` of `scripts`.
+///
+/// A python file in a folder beside the script is no module of the script,
+/// so `other/data.py` does not make `data` a module of a script of the root
+/// of the skill, and `data/sub/helper.py` does not make `data` a module
+/// either, because the folder `data` holds no python file of its own.
+///
+/// A module that reaches outside of the process is never local, so a skill
+/// that holds a file of the name of such a module still needs a container.
+fn local_modules(modules: &BTreeMap<String, BTreeSet<String>>, script: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut folder = folder_of(script);
+    loop {
+        if let Some(found) = modules.get(folder) {
+            names.extend(found.iter().cloned());
+        }
+        if folder.is_empty() {
+            break;
+        }
+        folder = folder_of(folder);
+    }
+    names.retain(|name| !risk::RISKY_MODULES.contains(&name.as_str()));
+    names
+}
+
+/// The files of the skill that hide a module of the standard library.
+///
+/// A python file of the name of a module that reaches outside of the
+/// process hides the module of the standard library, and a folder of that
+/// name that holds a python file below it hides it as well. The
+/// interpreter runs the file of the skill where it would run the module of
+/// the standard library, so such a file is a finding of its own.
+fn shadowed_modules(files: &[String]) -> Vec<String> {
+    let mut shadows: BTreeSet<String> = BTreeSet::new();
+    // The folders that hold a python file below them.
+    let mut packages: BTreeSet<&str> = BTreeSet::new();
+    for file in files {
+        if !file.ends_with(".py") {
+            continue;
+        }
+        let mut folder = folder_of(file);
+        packages.insert(folder);
+        while !folder.is_empty() {
+            folder = folder_of(folder);
+            packages.insert(folder);
+        }
+    }
+    for file in files {
+        if !file.ends_with(".py") {
+            continue;
+        }
+        if risk::hidden_module(name_of(file)).is_some() {
+            shadows.insert(file.clone());
+        }
+    }
+    for file in files {
+        let mut folder = folder_of(file);
+        while !folder.is_empty() {
+            if packages.contains(folder) && risk::hidden_module(name_of(folder)).is_some() {
+                shadows.insert(folder.to_string());
+            }
+            folder = folder_of(folder);
+        }
+    }
+    shadows.into_iter().collect()
+}
+
+/// The folder of a path of the skill.
+///
+/// The folder of a file of the root of the skill is empty.
+fn folder_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(position) => &path[..position],
+        None => "",
+    }
+}
+
+/// The name of a path of the skill.
+fn name_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(position) => &path[position + 1..],
+        None => path,
+    }
+}
+
+/// The tier that the scan suggests for a skill.
+///
+/// The tier says how much room a skill needs. A high finding means the
+/// skill never runs outside a microVM. A script that is not python, a module
+/// that is not in the standard library and a module that reaches outside of
+/// the process mean a container. A module that touches the file system and a
+/// script that opens a file mean a sandbox. A script that only computes means
+/// a plain process. A skill without a script is guidance and nothing to run.
+fn suggest_tier(
+    scripts: &[ScannedScript],
+    opens_file: bool,
+    findings: &[Finding],
+) -> (Tier, Vec<String>) {
+    let mut reasons: BTreeSet<String> = BTreeSet::new();
+    for finding in findings {
+        if finding.severity == Severity::High {
+            reasons.insert(finding.rule.clone());
+        }
+    }
+    if !reasons.is_empty() {
+        return (Tier::L3, reasons.into_iter().collect());
+    }
+
+    for scanned in scripts {
+        if scanned.script.language != "python" {
+            reasons.insert(format!(
+                "{} script {}",
+                scanned.script.language, scanned.script.path
+            ));
+        }
+    }
+    for scanned in scripts {
+        if scanned.script.language != "python" {
+            continue;
+        }
+        for import in &scanned.script.imports {
+            // A module that reaches outside of the process is risky, even
+            // when the skill holds a file of that name, so the skill needs
+            // a container and not only a sandbox.
+            if risk::RISKY_MODULES.contains(&import.as_str()) {
+                reasons.insert(format!("risky import: {import}"));
+            } else if !risk::STDLIB_MODULES.contains(&import.as_str())
+                && !scanned.local_modules.contains(import)
+            {
+                reasons.insert(format!("third party import: {import}"));
+            }
+        }
+    }
+    if !reasons.is_empty() {
+        return (Tier::L2, reasons.into_iter().collect());
+    }
+
+    for scanned in scripts {
+        if scanned.script.language != "python" {
+            continue;
+        }
+        for import in &scanned.script.imports {
+            if risk::FILESYSTEM_MODULES.contains(&import.as_str()) {
+                reasons.insert(format!("file system import: {import}"));
+            }
+        }
+    }
+    if opens_file {
+        reasons.insert("opens a file".to_string());
+    }
+    if !reasons.is_empty() {
+        return (Tier::L1, reasons.into_iter().collect());
+    }
+
+    if scripts
+        .iter()
+        .any(|scanned| scanned.script.language == "python")
+    {
+        return (Tier::L0, vec!["python scripts only".to_string()]);
+    }
+    (Tier::None, vec!["no scripts".to_string()])
 }
 
 /// Whether a file holds a binary payload.
@@ -1530,6 +1910,33 @@ mod tests {
     }
 
     #[test]
+    fn a_module_of_a_folder_above_the_script_is_a_local_module() {
+        let files = vec![
+            "scripts/migrate/agents.py".to_string(),
+            "scripts/utils/__init__.py".to_string(),
+            "scripts/utils.py".to_string(),
+            "other/data.py".to_string(),
+        ];
+        let modules = folder_modules(&files);
+        let local = local_modules(&modules, "scripts/migrate/agents.py");
+
+        assert!(local.contains("utils"), "{local:?}");
+        assert!(!local.contains("data"), "{local:?}");
+    }
+
+    #[test]
+    fn a_risky_module_is_never_a_local_module() {
+        let files = vec![
+            "scripts/migrate/agents.py".to_string(),
+            "scripts/socket.py".to_string(),
+        ];
+        let modules = folder_modules(&files);
+        let local = local_modules(&modules, "scripts/migrate/agents.py");
+
+        assert!(!local.contains("socket"), "{local:?}");
+    }
+
+    #[test]
     fn adds_a_directory_skill_with_a_planted_secret() {
         let source = skill_fixture("add-directory");
         let store = temp_dir("add-directory-store");
@@ -1551,7 +1958,8 @@ mod tests {
             .expect("a secret finding");
         assert_eq!(secret.path, "run.py");
         assert_eq!(secret.line, Some(3));
-        assert_eq!(secret.severity, Severity::High);
+        assert_eq!(secret.severity, Severity::Medium);
+        assert_eq!(result.version.tier, "L1");
 
         let script = result
             .version
@@ -1594,6 +2002,94 @@ mod tests {
 
         let record = read_record(&store, "demo").unwrap();
         assert_eq!(record.versions.len(), 1);
+    }
+
+    #[test]
+    fn an_add_of_the_same_content_refreshes_the_record() {
+        let source = skill_fixture("refresh");
+        let store = temp_dir("refresh-store");
+
+        let first = add_skill(&options(&source, &store)).unwrap();
+        assert!(!first.already_stored);
+        assert!(!first.refreshed);
+
+        let second = add_skill(&options(&source, &store)).unwrap();
+        assert!(second.already_stored);
+        assert!(!second.refreshed);
+        assert_eq!(first.version.findings, second.version.findings);
+
+        // A record that was written by an older rule holds the wrong
+        // findings and the wrong tier.
+        let mut record = read_record(&store, "demo").unwrap();
+        record.versions[0].findings.clear();
+        record.versions[0].tier = Tier::L3;
+        record.versions[0].tier_reasons = vec!["an old rule".to_string()];
+        let added_at = record.versions[0].added_at.clone();
+        let hash = record.versions[0].hash.clone();
+        write_record(&store, "demo", &record).unwrap();
+
+        let third = add_skill(&options(&source, &store)).unwrap();
+
+        assert!(third.already_stored);
+        assert!(third.refreshed);
+        assert_eq!(third.version.tier, Tier::L1);
+        assert!(
+            third
+                .version
+                .findings
+                .iter()
+                .any(|finding| finding.rule == "secret"),
+            "{:?}",
+            third.version.findings
+        );
+
+        let record = read_record(&store, "demo").unwrap();
+        assert_eq!(record.versions.len(), 1);
+        assert_eq!(record.versions[0].hash, hash);
+        assert_eq!(record.versions[0].added_at, added_at);
+        assert_eq!(record.versions[0].tier, Tier::L1);
+        assert!(
+            record.versions[0]
+                .tier_reasons
+                .iter()
+                .any(|reason| reason.contains("os")),
+            "{:?}",
+            record.versions[0].tier_reasons
+        );
+        assert!(
+            record.versions[0]
+                .findings
+                .iter()
+                .any(|finding| finding.rule == "secret"),
+            "{:?}",
+            record.versions[0].findings
+        );
+    }
+
+    #[test]
+    fn an_add_of_the_same_content_refreshes_the_scripts() {
+        let source = skill_fixture("refresh-scripts");
+        let store = temp_dir("refresh-scripts-store");
+
+        let first = add_skill(&options(&source, &store)).unwrap();
+        assert_eq!(first.version.scripts.len(), 1);
+        assert_eq!(first.version.scripts[0].path, "run.py");
+        assert_eq!(first.version.scripts[0].imports, vec!["os".to_string()]);
+
+        // A record that was written by an older rule holds no scripts.
+        let mut record = read_record(&store, "demo").unwrap();
+        record.versions[0].scripts.clear();
+        write_record(&store, "demo", &record).unwrap();
+
+        let second = add_skill(&options(&source, &store)).unwrap();
+
+        assert!(second.already_stored);
+        assert!(second.refreshed);
+        assert_eq!(second.version.scripts, first.version.scripts);
+
+        let record = read_record(&store, "demo").unwrap();
+        assert_eq!(record.versions.len(), 1);
+        assert_eq!(record.versions[0].scripts, first.version.scripts);
     }
 
     #[test]
@@ -1835,7 +2331,7 @@ mod tests {
             .find(|finding| finding.rule == "binary")
             .expect("a binary finding");
         assert_eq!(finding.path, "tool.bin");
-        assert_eq!(finding.severity, Severity::Medium);
+        assert_eq!(finding.severity, Severity::High);
         assert_eq!(finding.line, None);
     }
 
@@ -1850,12 +2346,14 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, "demo");
         assert_eq!(summaries[0].hash, result.version.hash);
-        assert_eq!(summaries[0].high, 1);
-        assert_eq!(summaries[0].medium, 0);
+        assert_eq!(summaries[0].tier, "L1");
+        assert_eq!(summaries[0].high, 0);
+        assert_eq!(summaries[0].medium, 1);
         assert_eq!(summaries[0].low, 0);
 
         let text = render_summaries(&summaries);
         assert!(text.contains("demo"), "{text}");
+        assert!(text.contains("tier L1"), "{text}");
         assert!(!text.contains(SECRET), "{text}");
     }
 
@@ -2044,7 +2542,7 @@ mod tests {
             .expect("a secret finding");
         assert_eq!(finding.path, "payload.dat");
         assert_eq!(finding.line, Some(2));
-        assert_eq!(finding.severity, Severity::High);
+        assert_eq!(finding.severity, Severity::Medium);
     }
 
     #[test]
@@ -2191,6 +2689,8 @@ mod tests {
                     path: SECRET.to_string(),
                     line: Some(1),
                 }],
+                tier: Tier::None,
+                tier_reasons: vec![SECRET.to_string()],
             }],
         };
 

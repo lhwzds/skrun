@@ -4,6 +4,7 @@
 //! on `skrun` from crates.io without pulling the internal workspace crates.
 
 pub mod catalog;
+pub mod risk;
 pub mod runtime;
 pub mod store;
 

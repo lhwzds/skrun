@@ -93,6 +93,50 @@ fn the_same_skill_is_already_stored() {
 }
 
 #[test]
+fn an_add_of_the_same_content_refreshes_the_record() {
+    let source = skill_fixture("store-refresh");
+    let store = temp_dir("store-refresh-store");
+
+    let first = run(&["catalog", "add", &path(&source), "--store", &path(&store)]);
+    assert_eq!(first.status.code(), Some(0));
+    let record_path = store.join("records/demo.json");
+    let before: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&record_path).unwrap()).unwrap();
+    let before_version = before["versions"][0].clone();
+
+    // The record of an older rule holds the wrong findings and the wrong tier.
+    let mut stale = before.clone();
+    stale["versions"][0]["findings"] = serde_json::json!([]);
+    stale["versions"][0]["tier"] = serde_json::json!("L3");
+    stale["versions"][0]["tier_reasons"] = serde_json::json!(["an old rule"]);
+    write(&record_path, &serde_json::to_string_pretty(&stale).unwrap());
+
+    let second = run(&["catalog", "add", &path(&source), "--store", &path(&store)]);
+
+    assert_eq!(second.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        stdout.contains("already stored (record refreshed)"),
+        "{stdout}"
+    );
+    assert_clean(&second);
+
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&record_path).unwrap()).unwrap();
+    assert_eq!(after["versions"].as_array().unwrap().len(), 1);
+    let after_version = &after["versions"][0];
+    assert_eq!(after_version["hash"], before_version["hash"]);
+    assert_eq!(after_version["from"], before_version["from"]);
+    assert_eq!(after_version["added_at"], before_version["added_at"]);
+    assert_eq!(after_version["findings"], before_version["findings"]);
+    assert_eq!(after_version["tier"], before_version["tier"]);
+    assert_eq!(
+        after_version["tier_reasons"],
+        before_version["tier_reasons"]
+    );
+}
+
+#[test]
 fn a_changed_file_adds_a_second_version() {
     let source = skill_fixture("store-version");
     let store = temp_dir("store-version-store");
@@ -399,7 +443,7 @@ fn a_file_with_elf_magic_is_a_binary_finding() {
 
     let record = fs::read_to_string(store.join("records/demo.json")).unwrap();
     assert!(record.contains("\"rule\": \"binary\""), "{record}");
-    assert!(record.contains("\"severity\": \"medium\""), "{record}");
+    assert!(record.contains("\"severity\": \"high\""), "{record}");
     assert!(record.contains("\"path\": \"tool.bin\""), "{record}");
     assert_clean(&output);
 }
@@ -415,8 +459,9 @@ fn the_inspect_command_shows_the_record_and_the_list() {
     assert_eq!(list.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&list.stdout);
     assert!(stdout.contains("demo"), "{stdout}");
-    assert!(stdout.contains("high 1"), "{stdout}");
-    assert!(stdout.contains("medium 0"), "{stdout}");
+    assert!(stdout.contains("tier L1"), "{stdout}");
+    assert!(stdout.contains("high 0"), "{stdout}");
+    assert!(stdout.contains("medium 1"), "{stdout}");
     assert!(stdout.contains("low 0"), "{stdout}");
     assert_clean(&list);
 
@@ -426,7 +471,7 @@ fn the_inspect_command_shows_the_record_and_the_list() {
     assert!(stdout.contains("version "), "{stdout}");
     assert!(stdout.contains("run.py"), "{stdout}");
     assert!(stdout.contains("python"), "{stdout}");
-    assert!(stdout.contains("high secret run.py:3"), "{stdout}");
+    assert!(stdout.contains("medium secret run.py:3"), "{stdout}");
     assert_clean(&record);
 
     let json = run(&[

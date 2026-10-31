@@ -1339,44 +1339,301 @@ pub(crate) fn script_language(path: &Path) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn python_imports(text: &str) -> Vec<String> {
+/// The modules that a python text imports.
+///
+/// Every module of an import statement is read, so `import a, b as c, d.e`
+/// holds three modules: `a`, `b` and `d`. The name of a module is the top
+/// level name of its path, so `d.e` is the module `d` and `from x.y import
+/// z` is the module `x`.
+///
+/// A statement that goes on the next line is read as one line, so every
+/// line of the text is read.
+///
+/// A line that is inside a string is a part of the string, so a line of a
+/// docstring holds no import, not even when it looks like one.
+///
+/// A relative import names a module of the skill itself, so it is left out.
+pub fn python_imports(text: &str) -> Vec<String> {
     let mut imports = BTreeSet::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        let keyword = if trimmed.starts_with("import") {
-            "import"
-        } else if trimmed.starts_with("from") {
-            "from"
-        } else {
-            continue;
-        };
-        let rest = &trimmed[keyword.len()..];
-        if !rest.starts_with(char::is_whitespace) {
+    for line in logical_lines(text) {
+        read_line_imports(&line, &mut imports);
+    }
+    imports
+        .into_iter()
+        .filter(|name| name != "__future__")
+        .collect()
+}
+
+/// The logical lines of a python text.
+///
+/// A line that ends with a backslash goes on with the next line, so the
+/// two lines are one line.
+///
+/// A line that is inside a string is a part of the string, so a string of
+/// three quotes holds the lines until the three quotes come back. A line
+/// of a comment goes to the end of the line, so a backslash at the end of a
+/// comment does not go on with the next line.
+///
+/// A backslash inside a string escapes the character that follows it, so an
+/// escaped quote does not close the string. This holds for a string of three
+/// quotes as well, so `\"""` does not close the string.
+fn logical_lines(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut index = 0;
+    let mut quote: Option<u8> = None;
+    let mut triple = false;
+    let mut comment = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if comment {
+            if byte == b'\n' {
+                lines.push(std::mem::take(&mut line));
+                comment = false;
+                index += 1;
+                continue;
+            }
+            let (character, length) = character_at(text, index);
+            line.push(character);
+            index += length;
             continue;
         }
-        let rest = rest.trim_start();
-        let mut characters = rest.chars();
-        let Some(first) = characters.next() else {
-            continue;
-        };
-        if !first.is_ascii_alphabetic() && first != '_' {
+        if let Some(open) = quote {
+            if byte == b'\\' {
+                // A backslash escapes the character that follows it, so an
+                // escaped quote does not close the string. The escaped
+                // character is a whole character, also when it holds more
+                // than one byte.
+                let (character, length) = character_at(text, index);
+                line.push(character);
+                index += length;
+                if index < bytes.len() {
+                    let (character, length) = character_at(text, index);
+                    line.push(character);
+                    index += length;
+                }
+                continue;
+            }
+            if triple {
+                if byte == open && is_triple_at(bytes, index) {
+                    line.push_str(&text[index..index + 3]);
+                    index += 3;
+                    quote = None;
+                    triple = false;
+                    continue;
+                }
+            } else if byte == open {
+                line.push(byte as char);
+                index += 1;
+                quote = None;
+                continue;
+            }
+            let (character, length) = character_at(text, index);
+            line.push(character);
+            index += length;
             continue;
         }
-        let mut name = String::new();
-        name.push(first);
-        for character in characters {
-            if character.is_alphanumeric() || character == '_' {
-                name.push(character);
-            } else {
-                break;
+        match byte {
+            b'\'' | b'"' => {
+                if is_triple_at(bytes, index) {
+                    line.push_str(&text[index..index + 3]);
+                    index += 3;
+                    triple = true;
+                } else {
+                    line.push(byte as char);
+                    index += 1;
+                    triple = false;
+                }
+                quote = Some(byte);
+            }
+            b'#' => {
+                comment = true;
+                line.push('#');
+                index += 1;
+            }
+            b'\n' => {
+                let head = line.trim_end().strip_suffix('\\').map(|head| head.len());
+                match head {
+                    Some(length) => {
+                        line.truncate(length);
+                        line.push(' ');
+                    }
+                    None => lines.push(std::mem::take(&mut line)),
+                }
+                index += 1;
+            }
+            _ => {
+                let (character, length) = character_at(text, index);
+                line.push(character);
+                index += length;
             }
         }
-        if name == "__future__" {
-            continue;
-        }
-        imports.insert(name);
     }
-    imports.into_iter().collect()
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// The modules that the statements of a line import.
+///
+/// A line can hold more than one statement, so the line is split at every
+/// semicolon that is not inside a string, and every statement of the line
+/// is read on its own.
+fn read_line_imports(line: &str, imports: &mut BTreeSet<String>) {
+    for statement in split_statements(line) {
+        read_imports(statement, imports);
+    }
+}
+
+/// The statements of a line of python.
+///
+/// The line is split at every semicolon that is not inside a string and
+/// not inside a comment, so `import math; import subprocess` holds two
+/// statements. A semicolon inside a string is a part of the string, so the
+/// line is not split there.
+fn split_statements(line: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < line.len() {
+        let (character, length) = character_at(line, index);
+        match character {
+            '\'' | '"' => index = end_of_string(line, index),
+            '#' => break,
+            ';' => {
+                statements.push(&line[start..index]);
+                index += length;
+                start = index;
+            }
+            _ => index += length,
+        }
+    }
+    statements.push(&line[start..]);
+    statements
+}
+
+/// The offset after the string that starts at an offset.
+///
+/// The quote of the string is at the offset. A string of three quotes ends
+/// at the next three quotes that are not escaped, a string of one quote
+/// ends at the next quote that is not escaped, and a string that is never
+/// closed ends at the end of the text.
+fn end_of_string(text: &str, start: usize) -> usize {
+    let bytes = text.as_bytes();
+    let quote = bytes[start];
+    if is_triple_at(bytes, start) {
+        let mut index = start + 3;
+        while index < bytes.len() {
+            if bytes[index] == b'\\' {
+                index = escaped_end(text, index);
+                continue;
+            }
+            if bytes[index] == quote && is_triple_at(bytes, index) {
+                return index + 3;
+            }
+            index += 1;
+        }
+        return bytes.len();
+    }
+    let mut index = start + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = escaped_end(text, index),
+            byte if byte == quote => return index + 1,
+            _ => index += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// The offset after the character that a backslash escapes.
+///
+/// The backslash is at the offset. A backslash escapes the character that
+/// follows it, so the offset is after that whole character, also when the
+/// character holds more than one byte.
+fn escaped_end(text: &str, index: usize) -> usize {
+    let next = index + 1;
+    if next >= text.len() {
+        return next;
+    }
+    let (_, length) = character_at(text, next);
+    next + length
+}
+
+/// Whether three quotes of the same kind start at an offset.
+fn is_triple_at(bytes: &[u8], index: usize) -> bool {
+    index + 2 < bytes.len() && bytes[index + 1] == bytes[index] && bytes[index + 2] == bytes[index]
+}
+
+/// The character at an offset of a text, and its length in bytes.
+fn character_at(text: &str, index: usize) -> (char, usize) {
+    match text[index..].chars().next() {
+        Some(character) => (character, character.len_utf8()),
+        None => ('\u{fffd}', 1),
+    }
+}
+
+/// The modules that one line of python imports.
+///
+/// The line is read as a whole, so a line that holds more than one module
+/// holds all of them.
+fn read_imports(line: &str, imports: &mut BTreeSet<String>) {
+    let trimmed = line.trim_start();
+    if let Some(rest) = after_keyword(trimmed, "import") {
+        for module in rest.split(',') {
+            if let Some(name) = module_name(module) {
+                imports.insert(name);
+            }
+        }
+    } else if let Some(rest) = after_keyword(trimmed, "from") {
+        let module = rest.trim_start();
+        if module.starts_with('.') {
+            return;
+        }
+        if let Some(name) = module_name(module) {
+            imports.insert(name);
+        }
+    }
+}
+
+/// The text that follows a keyword of a line.
+///
+/// The keyword is only a keyword when a space follows it, so the line
+/// `important = 1` holds no import.
+fn after_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(keyword)?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.trim_start())
+}
+
+/// The name of the module of an import.
+///
+/// The name is the top level name of the path of the module, so `d.e` is
+/// the module `d`. The alias of an import is left out, so `b as c` is the
+/// module `b`. A name that does not start with a letter or an underscore is
+/// no module at all.
+fn module_name(text: &str) -> Option<String> {
+    let word = text.split_whitespace().next().unwrap_or_default();
+    let head = word.split('.').next().unwrap_or_default();
+    let mut characters = head.chars();
+    let first = characters.next()?;
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return None;
+    }
+    let mut name = String::new();
+    name.push(first);
+    for character in characters {
+        if character.is_alphanumeric() || character == '_' {
+            name.push(character);
+        } else {
+            break;
+        }
+    }
+    Some(name)
 }
 
 fn collect_links(dir: &Path, skill: &Skill, text: &str) -> Vec<LinkInfo> {
@@ -2389,6 +2646,198 @@ mod tests {
         assert!(imports.contains(&"na\u{ef}ve".to_string()));
         assert!(!imports.contains(&"caf".to_string()));
         assert!(!imports.contains(&"3bad".to_string()));
+    }
+
+    #[test]
+    fn python_imports_read_every_module_of_an_import() {
+        let imports = python_imports(concat!(
+            "import math, subprocess\n",
+            "import os.path as path\n",
+            "import json\n",
+            "from collections import deque\n",
+            "import a.b.c\n",
+            "    import indented\n",
+            "important = 1\n",
+            "fromage = 2\n",
+        ));
+
+        assert_eq!(
+            imports,
+            vec![
+                "a".to_string(),
+                "collections".to_string(),
+                "indented".to_string(),
+                "json".to_string(),
+                "math".to_string(),
+                "os".to_string(),
+                "subprocess".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn python_imports_read_a_statement_that_goes_on_the_next_line() {
+        let imports = python_imports(concat!(
+            "import math, \\\n",
+            "    subprocess\n",
+            "from os import \\\n",
+            "    path\n",
+        ));
+
+        assert_eq!(
+            imports,
+            vec![
+                "math".to_string(),
+                "os".to_string(),
+                "subprocess".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn python_imports_read_every_statement_of_a_line() {
+        let imports = python_imports(concat!(
+            "import math; import subprocess\n",
+            "import json; from collections import deque\n",
+            "value = 1; import os\n",
+        ));
+
+        assert_eq!(
+            imports,
+            vec![
+                "collections".to_string(),
+                "json".to_string(),
+                "math".to_string(),
+                "os".to_string(),
+                "subprocess".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn python_imports_do_not_split_a_line_inside_a_string() {
+        let imports = python_imports(concat!(
+            "text = \"a; import subprocess\"\n",
+            "other = 'b; import socket'\n",
+            "import json\n",
+        ));
+
+        assert_eq!(imports, vec!["json".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_leave_a_line_of_a_string_of_three_quotes_out() {
+        let imports = python_imports(concat!(
+            "\"\"\"\n",
+            "This is a harmless docstring.\n",
+            "a; import subprocess\n",
+            "\"\"\"\n",
+            "print(1)\n",
+        ));
+
+        assert_eq!(imports, Vec::<String>::new());
+    }
+
+    #[test]
+    fn python_imports_leave_a_string_of_three_quotes_of_one_line_out() {
+        let imports = python_imports("x = \"\"\"a; import subprocess\"\"\"\nprint(1)\n");
+
+        assert_eq!(imports, Vec::<String>::new());
+    }
+
+    #[test]
+    fn python_imports_do_not_split_a_line_inside_a_comment() {
+        let imports = python_imports("import json  # a comment; import subprocess\n");
+
+        assert_eq!(imports, vec!["json".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_leave_a_relative_import_out() {
+        let imports = python_imports(concat!(
+            "from . import helper\n",
+            "from .local import thing\n",
+            "from ..other import thing\n",
+            "import os\n",
+        ));
+
+        assert_eq!(imports, vec!["os".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_read_a_line_after_a_string_with_a_wide_escape() {
+        let imports = python_imports(concat!(
+            "text = \"\\\u{e9}\"\n",
+            "other = '\\\u{4e2d}'\n",
+            "third = \"\\\\\"\n",
+            "import subprocess\n",
+        ));
+
+        assert_eq!(imports, vec!["subprocess".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_read_a_line_after_a_string_of_three_quotes_with_an_escape() {
+        let imports = python_imports(concat!(
+            "x = \"\"\"a \\\"\"\" b\"\"\"\n",
+            "import subprocess\n",
+        ));
+
+        assert_eq!(imports, vec!["subprocess".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_read_a_line_after_a_string_of_three_quotes_of_one_kind() {
+        let imports = python_imports(concat!("x = '''a \\'' b'''\n", "import subprocess\n",));
+
+        assert_eq!(imports, vec!["subprocess".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_read_a_line_after_a_string_of_three_quotes_that_goes_on() {
+        let imports = python_imports(concat!(
+            "x = \"\"\"a \\\n",
+            "b\"\"\"\n",
+            "import subprocess\n",
+        ));
+
+        assert_eq!(imports, vec!["subprocess".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_survive_every_line_of_a_text_of_quotes_and_wide_characters() {
+        let text = concat!(
+            "plain = 1\n",
+            "double = \"a\\\u{e9}b\"\n",
+            "single = '\u{4e2d}'\n",
+            "escaped = \"\\\"\"\n",
+            "triple = \"\"\"a \\\"\"\" b\"\"\"\n",
+            "triple_single = '''a \\' b'''\n",
+            "wide = \"\u{1f600}\"\n",
+            "backslash = \"\\\\\"\n",
+            "comment = 1 # a \" comment\n",
+            "import subprocess\n",
+        );
+
+        // Every line of the text is read on its own.
+        for line in text.lines() {
+            let _ = python_imports(line);
+        }
+
+        // Every part of the text is read, so every place where a string, an
+        // escape or a wide character can sit is read as well.
+        let boundaries: Vec<usize> = (0..=text.len())
+            .filter(|index| text.is_char_boundary(*index))
+            .collect();
+        for start in &boundaries {
+            for end in &boundaries {
+                if start <= end {
+                    let _ = python_imports(&text[*start..*end]);
+                }
+            }
+        }
+
+        assert_eq!(python_imports(text), vec!["subprocess".to_string()]);
     }
 
     #[test]

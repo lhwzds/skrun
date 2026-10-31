@@ -870,17 +870,22 @@ fn run_catalog_add(options: &CatalogAddCommand) -> Result<()> {
         );
     } else {
         let state = if result.already_stored {
-            "already stored"
+            if result.refreshed {
+                "already stored (record refreshed)"
+            } else {
+                "already stored"
+            }
         } else {
             "stored"
         };
         println!(
-            "{} {} {} ({} files, {} findings)",
+            "{} {} {} ({} files, {} findings) tier {}",
             state,
             catalog::redact(&result.id),
             catalog::redact(&result.version.hash),
             result.version.files,
-            result.version.findings.len()
+            result.version.findings.len(),
+            catalog::redact(result.version.tier.as_str())
         );
     }
     Ok(())
