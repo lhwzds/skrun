@@ -640,12 +640,22 @@ fn a_risky_module_of_the_skill_is_still_a_risky_module() {
     let store = temp_dir("tier-risky-local-store");
     let version = add(&source, &store);
 
-    assert_eq!(version.tier, "L2");
+    // The file of the skill hides a module that reaches outside of the
+    // process, so the skill needs a microVM.
+    assert_eq!(version.tier, "L3");
     assert!(
         version
             .tier_reasons
             .iter()
             .any(|reason| reason.contains("risky import: subprocess")),
+        "{:?}",
+        version.tier_reasons
+    );
+    assert!(
+        version
+            .tier_reasons
+            .iter()
+            .any(|reason| reason.contains("shadows the module subprocess")),
         "{:?}",
         version.tier_reasons
     );
@@ -657,6 +667,8 @@ fn a_risky_module_of_the_skill_is_still_a_risky_module() {
         .expect("a shadowing finding");
     assert_eq!(finding.severity, Severity::Medium);
     assert_eq!(finding.path, "x/subprocess.py");
+    // The finding keeps the name of the module that the file hides.
+    assert_eq!(finding.detail.as_deref(), Some("subprocess"));
 }
 
 #[test]
@@ -687,12 +699,22 @@ fn every_risky_module_is_risky_even_when_the_skill_holds_a_file_of_that_name() {
             let store = temp_dir(&format!("{name}-store"));
             let version = add(&source, &store);
 
-            assert_eq!(version.tier, "L2", "{module} in {folder}");
+            // The file of the skill hides a module that reaches outside of
+            // the process, so the skill needs a microVM.
+            assert_eq!(version.tier, "L3", "{module} in {folder}");
             assert!(
                 version
                     .tier_reasons
                     .iter()
                     .any(|reason| reason.contains(&format!("risky import: {module}"))),
+                "{module} in {folder}: {:?}",
+                version.tier_reasons
+            );
+            assert!(
+                version
+                    .tier_reasons
+                    .iter()
+                    .any(|reason| reason.contains(&format!("shadows the module {module}"))),
                 "{module} in {folder}: {:?}",
                 version.tier_reasons
             );
@@ -704,6 +726,7 @@ fn every_risky_module_is_risky_even_when_the_skill_holds_a_file_of_that_name() {
                 .expect("a shadowing finding");
             assert_eq!(finding.severity, Severity::Medium, "{module}");
             assert_eq!(finding.path, shadow, "{module}");
+            assert_eq!(finding.detail.as_deref(), Some(*module), "{module}");
         }
     }
 }
@@ -720,7 +743,9 @@ fn a_folder_of_a_risky_module_is_a_shadowing_finding() {
     let store = temp_dir("risk-shadow-folder-store");
     let version = add(&source, &store);
 
-    assert_eq!(version.tier, "L2");
+    // The folder of the skill hides a module that reaches outside of the
+    // process, so the skill needs a microVM.
+    assert_eq!(version.tier, "L3");
     assert!(
         version
             .tier_reasons
@@ -737,6 +762,7 @@ fn a_folder_of_a_risky_module_is_a_shadowing_finding() {
         .expect("a shadowing finding");
     assert_eq!(finding.severity, Severity::Medium);
     assert_eq!(finding.path, "socket");
+    assert_eq!(finding.detail.as_deref(), Some("socket"));
 }
 
 #[test]
@@ -885,12 +911,22 @@ fn a_risky_module_of_a_folder_above_the_script_is_still_a_risky_module() {
     let store = temp_dir("tier-above-folder-risky-store");
     let version = add(&source, &store);
 
-    assert_eq!(version.tier, "L2");
+    // The file of the skill hides a module that reaches outside of the
+    // process, so the skill needs a microVM.
+    assert_eq!(version.tier, "L3");
     assert!(
         version
             .tier_reasons
             .iter()
             .any(|reason| reason.contains("risky import: socket")),
+        "{:?}",
+        version.tier_reasons
+    );
+    assert!(
+        version
+            .tier_reasons
+            .iter()
+            .any(|reason| reason.contains("shadows the module socket")),
         "{:?}",
         version.tier_reasons
     );

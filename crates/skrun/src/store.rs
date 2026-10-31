@@ -13,10 +13,15 @@
 //! - refusal of a name that is not text
 //! - the id of an added skill, taken from the real path of its source
 //! - the content hash of a staged skill
+//! - the name of the folder of every version of a skill
 //! - the read-only copy of a stored skill
 //! - the threat record of every added version
 //! - the risk rules of the scan and the tier they suggest
+//! - the finding of a file that was not read and of a file that cannot be
+//!   parsed
+//! - the finding of a file that hides a module of the standard library
 //! - the lock of a skill id while it is added
+//! - the modes of the folders and of the files of the store
 //!
 //! ## Must Not
 //! - execute anything that comes from an added skill
@@ -52,7 +57,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -76,6 +81,30 @@ pub const MAX_COMPRESSION_RATIO: u64 = 100;
 
 /// Number of hex characters of the content hash that name a version.
 pub const HASH_LENGTH: usize = 16;
+
+/// The mode of the folders of the store that hold its state.
+///
+/// The store holds what the user brought in, so only the user of the store
+/// can read the folders of the store.
+const PRIVATE_DIR_MODE: u32 = 0o700;
+
+/// The mode of the files of a stored skill.
+///
+/// A stored skill never changes, so the files of a stored skill are read
+/// only for the user of the store.
+const STORED_FILE_MODE: u32 = 0o400;
+
+/// The mode of the folders of a stored skill.
+///
+/// A stored skill never changes, so the folders of a stored skill are read
+/// only for the user of the store.
+const STORED_DIR_MODE: u32 = 0o500;
+
+/// The mode of the records of the store.
+///
+/// A record holds what the user brought in, so only the user of the store
+/// can read a record.
+const RECORD_MODE: u32 = 0o600;
 
 /// How long an add waits for the lock of a skill id.
 pub const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -199,6 +228,13 @@ pub struct Finding {
     pub path: String,
     /// The line of the file, when the rule points at one.
     pub line: Option<u64>,
+    /// What the rule found, when the rule can say more than the path.
+    ///
+    /// A finding that hides a module of the standard library keeps the name
+    /// of the module that it hides, so the user knows what the file of the
+    /// skill stands in the way of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// One script of the threat record.
@@ -215,7 +251,11 @@ pub struct StoredScript {
 /// One stored version of a skill.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredVersion {
-    /// The short content hash that names the version.
+    /// The content hash that names the version.
+    ///
+    /// The name is the short hash of the content of the version. When a
+    /// folder of that name already holds another version, a longer part of
+    /// the hash names the version, so two versions never share a folder.
     pub hash: String,
     /// The whole content hash of the version.
     pub full_hash: String,
@@ -386,7 +426,14 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
     // record at the same time.
     let _lock = Lock::acquire(&root, &id)?;
 
-    let (hash, full_hash, files, bytes) = content_hash(&skill_root)?;
+    // The store holds what the user brought in, so the folders of the store
+    // are private to the user of the store.
+    create_private_dir(&root)?;
+    let skills_root = root.join("skills");
+    create_private_dir(&skills_root)?;
+    create_private_dir(&skills_root.join(&id))?;
+
+    let (_short_hash, full_hash, files, bytes) = content_hash(&skill_root)?;
     let scan = scan_skill(&skill_root)?;
     let Scan {
         scripts,
@@ -404,6 +451,7 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
             severity: Severity::Medium,
             path: catalog::redact(&path),
             line: None,
+            detail: None,
         });
     }
     findings.sort_by(|left, right| {
@@ -414,8 +462,12 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
     });
     let (tier, tier_reasons) = suggest_tier(&scripts, opens_file, &findings);
 
+    // The folder of the version is named after the hash of the version. A
+    // folder of that name that holds another version gets a longer name, so
+    // two versions of a skill never share a folder.
+    let name = version_name(&root, &id, &full_hash)?;
     let version = StoredVersion {
-        hash: hash.clone(),
+        hash: name.clone(),
         full_hash,
         from: options.from.as_deref().map(catalog::redact),
         added_at: rfc3339(SystemTime::now()),
@@ -432,15 +484,15 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
         tier_reasons,
     };
 
-    let skills_root = root.join("skills");
-    let target = skills_root.join(&id).join(&hash);
+    let target = skills_root.join(&id).join(&name);
     if !target.exists() {
-        fs::create_dir_all(skills_root.join(&id))
-            .with_context(|| format!("create `{}`", catalog::redact_path(&skills_root)))?;
         store_copy(&skill_root, &skills_root.join(&id), &target)?;
     }
 
     let mut record = load_record(&root, &id)?;
+    // The version of the record is the one of the folder of the version, so
+    // a folder that holds another version never takes the place of a
+    // version that is already stored.
     let known = record
         .versions
         .iter()
@@ -696,11 +748,18 @@ pub fn render_record(record: &ThreatRecord) -> String {
                     Some(line) => format!("{}:{}", catalog::redact(&finding.path), line),
                     None => catalog::redact(&finding.path),
                 };
+                // The detail of a finding says what the rule found, so the
+                // name of a module that a file hides is never lost.
+                let detail = match &finding.detail {
+                    Some(detail) => format!(" ({})", catalog::redact(detail)),
+                    None => String::new(),
+                };
                 text.push_str(&format!(
-                    "      finding {} {} {}\n",
+                    "      finding {} {} {}{}\n",
                     severity_name(finding.severity),
                     finding.rule,
-                    location
+                    location,
+                    detail
                 ));
             }
         }
@@ -750,19 +809,30 @@ fn load_record(root: &Path, id: &str) -> Result<ThreatRecord> {
 /// never overwritten halfway.
 fn write_record(root: &Path, id: &str, record: &ThreatRecord) -> Result<()> {
     let directory = root.join("records");
-    fs::create_dir_all(&directory)
-        .with_context(|| format!("create `{}`", catalog::redact_path(&directory)))?;
+    create_private_dir(&directory)?;
     let mut text = serde_json::to_string_pretty(record)?;
     text.push('\n');
     let path = record_path(root, id);
     let temporary = directory.join(format!("{id}.json.tmp-{}", std::process::id()));
     fs::write(&temporary, text)
         .with_context(|| format!("write record `{}`", catalog::redact_path(&temporary)))?;
+    set_file_mode(&temporary, RECORD_MODE)?;
     if let Err(error) = fs::rename(&temporary, &path) {
         let _ = fs::remove_file(&temporary);
         return Err(anyhow::Error::new(error)
             .context(format!("write record `{}`", catalog::redact_path(&path))));
     }
+    Ok(())
+}
+
+/// Create a folder of the store that only the user of the store can read.
+///
+/// The folder of the store, the folder of the skills, the folder of the
+/// records and the folder of the locks hold the state of the store, so they
+/// are private to the user of the store.
+fn create_private_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path).with_context(|| format!("create `{}`", catalog::redact_path(path)))?;
+    set_directory_mode(path, PRIVATE_DIR_MODE)?;
     Ok(())
 }
 
@@ -992,6 +1062,11 @@ fn extract_zip_with_limits(
         );
     }
 
+    // A second handle on the archive, so the real size of the data of an
+    // entry can be measured without disturbing the archive itself.
+    let mut measure = fs::File::open(source)
+        .with_context(|| format!("read zip archive `{}`", catalog::redact_path(source)))?;
+
     let mut total: u64 = 0;
     let mut written_total: u64 = 0;
     for index in 0..archive.len() {
@@ -1042,14 +1117,111 @@ fn extract_zip_with_limits(
         }
         let mut out = fs::File::create(&path)
             .with_context(|| format!("create `{}`", catalog::redact_path(&path)))?;
-        let written = std::io::copy(&mut entry, &mut out)
+        // The number of compressed bytes that the entry really holds. The
+        // header of the archive can lie about the size of an entry, so the
+        // data of the entry is measured: the ratio of the entry is the
+        // ratio of the bytes that are really there.
+        let measured = match (entry.compression(), entry.data_start()) {
+            (zip::CompressionMethod::Deflated, Some(start)) => {
+                measure_compressed(&mut measure, start, compressed, max_bytes).with_context(
+                    || format!("read zip archive `{}`", catalog::redact_path(source)),
+                )?
+            }
+            // A stored entry is a copy, so its ratio is one.
+            (zip::CompressionMethod::Stored, _) => compressed,
+            _ => compressed,
+        };
+        // The limits are checked on the bytes that are really written, so a
+        // zip that lies about the size of its entries never gets past the
+        // limits. The reader of the entry is counted, and the copy stops as
+        // soon as the limit is over: the bytes that are over the limit are
+        // never written, the archive is refused right away and the staging
+        // goes away with it.
+        let remaining = max_bytes.saturating_sub(written_total);
+        let entry_limit = max_ratio.saturating_mul(measured);
+        let limit = remaining.min(entry_limit);
+        let read = copy_entry(&mut entry, &mut out, limit)
             .with_context(|| format!("read zip archive `{}`", catalog::redact_path(source)))?;
-        written_total = written_total.saturating_add(written);
-        if written_total > max_bytes {
+        if read > limit {
+            if entry_limit <= remaining {
+                bail!(
+                    "zip entry `{}` has a compression ratio above {max_ratio}",
+                    catalog::redact(&name)
+                );
+            }
             bail!("zip archive holds more than {max_bytes} bytes");
         }
+        written_total = written_total.saturating_add(read);
     }
     Ok(())
+}
+
+/// The number of compressed bytes that the data of a zip entry holds.
+///
+/// The data of the entry is read from the archive and decompressed, and the
+/// decompressor tells how many bytes of the archive it really read. A
+/// header that lies about the size of an entry cannot hide the real size
+/// of the data, so the ratio of the entry is the ratio of the real bytes.
+///
+/// The data is read until the limit of the store is reached, so a bomb
+/// never takes more time than the limit allows.
+fn measure_compressed(
+    file: &mut fs::File,
+    start: u64,
+    declared: u64,
+    max_output: u64,
+) -> Result<u64> {
+    file.seek(SeekFrom::Start(start))
+        .with_context(|| "read the data of the zip entry")?;
+    let reader = BufReader::new((&mut *file).take(declared));
+    let mut decoder = flate2::bufread::DeflateDecoder::new(reader);
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut output = 0u64;
+    loop {
+        let read = decoder.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output += read as u64;
+        if output > max_output {
+            bail!("zip archive holds more than {max_output} bytes");
+        }
+    }
+    Ok(decoder.total_in())
+}
+
+/// Copy the bytes of a zip entry into a file, up to a limit.
+///
+/// The reader of the entry is counted, so the number of bytes that are
+/// really read is known even when the archive lies about the size of its
+/// entry. The copy stops as soon as the limit is over: only the bytes that
+/// are within the limit are written, so the file never holds more than the
+/// limit.
+///
+/// The number of bytes that were read is returned, so the caller can tell
+/// that the limit was over.
+fn copy_entry(reader: &mut impl Read, out: &mut fs::File, limit: u64) -> Result<u64> {
+    let mut source = reader.take(limit.saturating_add(1));
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut read_total = 0u64;
+    let mut written = 0u64;
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        read_total += read as u64;
+        if written + read as u64 > limit {
+            // Only the bytes that are within the limit are written, and the
+            // rest of the entry is never read.
+            let room = (limit - written) as usize;
+            out.write_all(&buffer[..room])?;
+            break;
+        }
+        out.write_all(&buffer[..read])?;
+        written += read as u64;
+    }
+    Ok(read_total)
 }
 
 /// The path of a zip entry, relative to the archive root.
@@ -1093,6 +1265,11 @@ fn safe_relative_path(name: &str) -> Result<PathBuf> {
 ///
 /// The hash covers the path and the bytes of every stored file, so a file
 /// that changed changes the hash.
+///
+/// Every path and every content is written with its length in front of it,
+/// so two skills that hold the same bytes in another shape never hold the
+/// same hash: the file `a` with the content `b` and the file `a` with the
+/// content `b` of another file are two different skills.
 fn content_hash(root: &Path) -> Result<(String, String, u64, u64)> {
     let mut files = Vec::new();
     collect_files(root, "", &mut files)?;
@@ -1103,14 +1280,51 @@ fn content_hash(root: &Path) -> Result<(String, String, u64, u64)> {
         let content = fs::read(root.join(relative))
             .with_context(|| format!("read `{}`", catalog::redact(relative)))?;
         bytes += content.len() as u64;
+        hasher.update((relative.len() as u64).to_be_bytes());
         hasher.update(relative.as_bytes());
-        hasher.update([0u8]);
+        hasher.update((content.len() as u64).to_be_bytes());
         hasher.update(&content);
-        hasher.update([0u8]);
     }
     let full = hex(&hasher.finalize());
     let hash = full[..HASH_LENGTH].to_string();
     Ok((hash, full, files.len() as u64, bytes))
+}
+
+/// The name of the folder of a version of a skill.
+///
+/// The name is the short hash of the version, so the versions of a skill sit
+/// in folders of their own. When a folder of that name is already there and
+/// holds another version, a longer part of the hash names the version, so
+/// two versions of a skill never share a folder and one version is never
+/// taken for another one.
+fn version_name(root: &Path, id: &str, full_hash: &str) -> Result<String> {
+    let parent = root.join("skills").join(id);
+    for length in [HASH_LENGTH, HASH_LENGTH * 2, full_hash.len()] {
+        if length > full_hash.len() {
+            break;
+        }
+        let name = full_hash[..length].to_string();
+        let target = parent.join(&name);
+        if !target.exists() {
+            return Ok(name);
+        }
+        if !target.is_dir() {
+            continue;
+        }
+        // The folder is already there: it holds this version when the copy
+        // of the folder has the same hash.
+        if content_hash(&target)
+            .map(|stored| stored.1 == full_hash)
+            .unwrap_or(false)
+        {
+            return Ok(name);
+        }
+    }
+    bail!(
+        "the version `{}` of the skill `{}` is already stored",
+        catalog::redact(&full_hash[..HASH_LENGTH]),
+        catalog::redact(id)
+    )
 }
 
 /// What the scan of a skill root found.
@@ -1127,6 +1341,12 @@ struct Scan {
 struct ScannedScript {
     /// The script itself.
     script: StoredScript,
+    /// The path of the script, relative to the skill root, as it is.
+    ///
+    /// The path of the script itself is redacted, because a path can hold a
+    /// secret. The scan needs the real path to know the folder of the
+    /// script, so the real path is kept beside the redacted one.
+    path: String,
     /// The modules that the script can import from the skill itself.
     local_modules: BTreeSet<String>,
 }
@@ -1150,7 +1370,8 @@ fn scan_skill(root: &Path) -> Result<Scan> {
             .with_context(|| format!("read `{}`", catalog::redact(relative)))?;
         let binary = is_binary(relative, &content);
         let text = String::from_utf8_lossy(&content);
-        if let Some(language) = catalog::script_language(Path::new(relative)) {
+        let language = script_language(relative, &content);
+        if let Some(language) = language {
             let imports = if language == "python" {
                 catalog::python_imports(&text)
                     .iter()
@@ -1168,6 +1389,7 @@ fn scan_skill(root: &Path) -> Result<Scan> {
                     language: language.to_string(),
                     imports,
                 },
+                path: relative.clone(),
                 local_modules: local_modules(&modules, relative),
             });
         }
@@ -1177,6 +1399,7 @@ fn scan_skill(root: &Path) -> Result<Scan> {
                 severity: Severity::High,
                 path: catalog::redact(relative),
                 line: None,
+                detail: None,
             });
         }
         // Every file is scanned, also a file that holds bytes that are not
@@ -1190,24 +1413,50 @@ fn scan_skill(root: &Path) -> Result<Scan> {
                     severity: Severity::Medium,
                     path: catalog::redact(relative),
                     line: Some(index as u64 + 1),
+                    detail: None,
                 });
             }
         }
+        // A python file that cannot be tokenised hides its imports, so the
+        // scan cannot say what the file does. The file is a finding of its
+        // own, because a file that cannot be read is a file that can hold
+        // anything.
+        if language == Some("python") && !catalog::python_parses(&text) {
+            findings.push(Finding {
+                rule: "unparsed".to_string(),
+                severity: Severity::Medium,
+                path: catalog::redact(relative),
+                line: None,
+                detail: None,
+            });
+        }
         // The risk rules read the text of a file. A file that holds a binary
         // payload and a file that is too big are left to the findings above.
-        if !binary && content.len() as u64 <= risk::MAX_SCAN_BYTES {
+        // A file that is too big is not read at all, so it is a finding of
+        // its own: a file that is not scanned can hold anything.
+        if content.len() as u64 > risk::MAX_SCAN_BYTES {
+            findings.push(Finding {
+                rule: "unscanned".to_string(),
+                severity: Severity::Medium,
+                path: catalog::redact(relative),
+                line: None,
+                detail: None,
+            });
+        } else if !binary {
             findings.extend(risk::scan_text(&catalog::redact(relative), &text));
         }
     }
     // A file of the skill that hides a module of the standard library is a
     // finding of its own, because the interpreter runs the file of the
-    // skill where it would run the module of the standard library.
-    for path in shadowed_modules(&files) {
+    // skill where it would run the module of the standard library. The
+    // finding keeps the name of the module that the file hides.
+    for (path, module) in shadowed_modules(&files, &scripts) {
         findings.push(Finding {
             rule: "shadows_stdlib".to_string(),
             severity: Severity::Medium,
             path: catalog::redact(&path),
             line: None,
+            detail: Some(module.to_string()),
         });
     }
     Ok(Scan {
@@ -1290,15 +1539,35 @@ fn local_modules(modules: &BTreeMap<String, BTreeSet<String>>, script: &str) -> 
     names
 }
 
-/// The files of the skill that hide a module of the standard library.
+/// The files and the folders of the skill that hide a module of the
+/// standard library.
 ///
-/// A python file of the name of a module that reaches outside of the
-/// process hides the module of the standard library, and a folder of that
-/// name that holds a python file below it hides it as well. The
-/// interpreter runs the file of the skill where it would run the module of
-/// the standard library, so such a file is a finding of its own.
-fn shadowed_modules(files: &[String]) -> Vec<String> {
-    let mut shadows: BTreeSet<String> = BTreeSet::new();
+/// A file of the name of a module of the standard library hides that module,
+/// and a folder of that name that holds a python file below it hides it as
+/// well. The interpreter runs the file of the skill where it would run the
+/// module of the standard library, so such a file is a finding of its own.
+///
+/// Only a file or a folder that sits in a folder where a script lives, or
+/// in a folder above such a folder, hides a module: a file of a folder that
+/// holds no script and that is below no script is never imported, so it
+/// hides nothing.
+///
+/// Every shadow holds the path of the file or of the folder and the name of
+/// the module that it hides, so the finding of the shadow says what the
+/// file of the skill stands in the way of.
+fn shadowed_modules(files: &[String], scripts: &[ScannedScript]) -> Vec<(String, String)> {
+    // The folders that hold a script and the folders above them.
+    let mut script_folders: BTreeSet<&str> = BTreeSet::new();
+    for script in scripts {
+        let mut folder = folder_of(&script.path);
+        loop {
+            script_folders.insert(folder);
+            if folder.is_empty() {
+                break;
+            }
+            folder = folder_of(folder);
+        }
+    }
     // The folders that hold a python file below them.
     let mut packages: BTreeSet<&str> = BTreeSet::new();
     for file in files {
@@ -1312,24 +1581,74 @@ fn shadowed_modules(files: &[String]) -> Vec<String> {
             packages.insert(folder);
         }
     }
+    let mut shadows: BTreeSet<(String, String)> = BTreeSet::new();
     for file in files {
-        if !file.ends_with(".py") {
+        if !script_folders.contains(folder_of(file)) {
             continue;
         }
-        if risk::hidden_module(name_of(file)).is_some() {
-            shadows.insert(file.clone());
+        if let Some(module) = risk::hidden_stdlib_module(name_of(file)) {
+            shadows.insert((file.clone(), module.to_string()));
         }
     }
     for file in files {
         let mut folder = folder_of(file);
         while !folder.is_empty() {
-            if packages.contains(folder) && risk::hidden_module(name_of(folder)).is_some() {
-                shadows.insert(folder.to_string());
+            if packages.contains(folder)
+                && script_folders.contains(folder_of(folder))
+                && let Some(module) = risk::hidden_stdlib_module(name_of(folder))
+            {
+                shadows.insert((folder.to_string(), module.to_string()));
             }
             folder = folder_of(folder);
         }
     }
     shadows.into_iter().collect()
+}
+
+/// The language of a script of the skill.
+///
+/// A file with a known extension is a script of that language. A file
+/// without a known extension is a script when its first line starts with a
+/// `#!`, and the interpreter of that line names the language of the script.
+///
+/// An interpreter that is not known is the language `other`, and a script of
+/// an unknown language needs a container.
+fn script_language(relative: &str, content: &[u8]) -> Option<&'static str> {
+    if let Some(language) = catalog::script_language(Path::new(relative)) {
+        return Some(language);
+    }
+    shebang_language(content)
+}
+
+/// The language of a file that starts with a `#!` line.
+///
+/// The interpreter of the line names the language of the script. A shell
+/// interpreter is a shell script, a python interpreter is a python script
+/// and a javascript interpreter is a javascript script. Every other
+/// interpreter is a script of an unknown language.
+fn shebang_language(content: &[u8]) -> Option<&'static str> {
+    let first = content.split(|byte| *byte == b'\n').next()?;
+    let line = String::from_utf8_lossy(first);
+    let rest = line.strip_prefix("#!")?;
+    let mut words = rest.split_whitespace();
+    let mut interpreter = words.next()?;
+    if Path::new(interpreter)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some("env")
+    {
+        interpreter = words.next()?;
+    }
+    let name = Path::new(interpreter)
+        .file_name()
+        .and_then(|name| name.to_str())?
+        .to_ascii_lowercase();
+    Some(match name.as_str() {
+        "sh" | "bash" | "zsh" | "dash" => "shell",
+        name if name.starts_with("python") => "python",
+        "node" | "deno" | "bun" => "javascript",
+        _ => "other",
+    })
 }
 
 /// The folder of a path of the skill.
@@ -1353,11 +1672,14 @@ fn name_of(path: &str) -> &str {
 /// The tier that the scan suggests for a skill.
 ///
 /// The tier says how much room a skill needs. A high finding means the
-/// skill never runs outside a microVM. A script that is not python, a module
-/// that is not in the standard library and a module that reaches outside of
-/// the process mean a container. A module that touches the file system and a
-/// script that opens a file mean a sandbox. A script that only computes means
-/// a plain process. A skill without a script is guidance and nothing to run.
+/// skill never runs outside a microVM. A script that was not read at all
+/// means the same, because such a script can hide anything. A script that is
+/// not python, a module that is not in the standard library, a module that
+/// reaches outside of the process, a file that was not read, a file that
+/// cannot be parsed and a file that hides a module of the standard library
+/// mean a container. A module that touches the file system and a script that
+/// opens a file mean a sandbox. A script that only computes means a plain
+/// process. A skill without a script is guidance and nothing to run.
 fn suggest_tier(
     scripts: &[ScannedScript],
     opens_file: bool,
@@ -1367,6 +1689,23 @@ fn suggest_tier(
     for finding in findings {
         if finding.severity == Severity::High {
             reasons.insert(finding.rule.clone());
+        }
+    }
+    if !reasons.is_empty() {
+        return (Tier::L3, reasons.into_iter().collect());
+    }
+
+    // A script that was not read at all can hide anything, so it needs a
+    // microVM and not only a container.
+    for finding in findings {
+        if finding.rule != "unscanned" {
+            continue;
+        }
+        if scripts
+            .iter()
+            .any(|scanned| scanned.script.path == finding.path)
+        {
+            reasons.insert(format!("unscanned script: {}", finding.path));
         }
     }
     if !reasons.is_empty() {
@@ -1396,6 +1735,52 @@ fn suggest_tier(
             {
                 reasons.insert(format!("third party import: {import}"));
             }
+        }
+    }
+    // A file that hides a module that reaches outside of the process needs
+    // a microVM: the interpreter runs the file of the skill where it would
+    // run the module of the interpreter, so the skill can do everything
+    // that the module can do.
+    let mut shadows: BTreeSet<String> = BTreeSet::new();
+    for finding in findings {
+        if finding.rule != "shadows_stdlib" {
+            continue;
+        }
+        let Some(module) = finding.detail.as_deref() else {
+            continue;
+        };
+        if risk::RISKY_MODULES.contains(&module) {
+            shadows.insert(format!(
+                "shadows the module {module} that reaches outside of the process: {}",
+                finding.path
+            ));
+        }
+    }
+    if !shadows.is_empty() {
+        reasons.extend(shadows);
+        return (Tier::L3, reasons.into_iter().collect());
+    }
+
+    // A file that was not read and a file that cannot be parsed need a
+    // container: the scan cannot say what the file does. A file that hides
+    // a module of the standard library needs a container as well, because
+    // the interpreter runs the file of the skill where it would run the
+    // module of the interpreter. A skill that reaches outside of the
+    // process is already a container or more, so a file that hides such a
+    // module never needs more than a container.
+    for finding in findings {
+        let reason = match finding.rule.as_str() {
+            "unscanned" => Some(format!("unscanned file: {}", finding.path)),
+            "unparsed" => Some(format!("unparsed file: {}", finding.path)),
+            "shadows_stdlib" => Some(format!(
+                "shadows the module {} of the standard library: {}",
+                finding.detail.as_deref().unwrap_or("a module"),
+                finding.path
+            )),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            reasons.insert(reason);
         }
     }
     if !reasons.is_empty() {
@@ -1472,6 +1857,7 @@ fn collect_files(root: &Path, prefix: &str, out: &mut Vec<String>) -> Result<()>
 fn copy_readonly(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target)
         .with_context(|| format!("create `{}`", catalog::redact_path(target)))?;
+    set_directory_mode(target, PRIVATE_DIR_MODE)?;
     for path in read_dir_sorted(source)? {
         let metadata = fs::symlink_metadata(&path)
             .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
@@ -1482,7 +1868,7 @@ fn copy_readonly(source: &Path, target: &Path) -> Result<()> {
         } else if metadata.is_file() {
             fs::copy(&path, &into)
                 .with_context(|| format!("copy `{}`", catalog::redact_path(&path)))?;
-            set_file_mode(&into, 0o444)?;
+            set_file_mode(&into, STORED_FILE_MODE)?;
         }
     }
     Ok(())
@@ -1494,7 +1880,7 @@ fn lock_directories(root: &Path) -> Result<()> {
     collect_directories(root, &mut directories)?;
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     for directory in directories {
-        set_directory_mode(&directory, 0o555)?;
+        set_directory_mode(&directory, STORED_DIR_MODE)?;
     }
     Ok(())
 }
@@ -1669,9 +2055,9 @@ impl Lock {
     /// The wait is short, so a lock of a process that died on its own goes
     /// away soon enough.
     fn acquire_within(root: &Path, id: &str, timeout: Duration) -> Result<Self> {
+        create_private_dir(root)?;
         let directory = root.join("locks");
-        fs::create_dir_all(&directory)
-            .with_context(|| format!("create `{}`", catalog::redact_path(&directory)))?;
+        create_private_dir(&directory)?;
         let path = directory.join(format!("{id}.lock"));
         let deadline = Instant::now() + timeout;
         loop {
@@ -1680,7 +2066,10 @@ impl Lock {
                 .create_new(true)
                 .open(&path)
             {
-                Ok(_) => return Ok(Self { path }),
+                Ok(_) => {
+                    let _ = set_file_mode(&path, RECORD_MODE);
+                    return Ok(Self { path });
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     if Instant::now() >= deadline {
                         bail!(
@@ -1725,7 +2114,10 @@ impl Staging {
                 std::process::id()
             ));
             match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
+                Ok(()) => {
+                    set_directory_mode(&path, PRIVATE_DIR_MODE)?;
+                    return Ok(Self { path });
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     return Err(anyhow::Error::new(error).context(format!(
@@ -1752,7 +2144,7 @@ fn unlock_directories(root: &Path) -> Result<()> {
     collect_directories(root, &mut directories)?;
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     for directory in directories {
-        set_directory_mode(&directory, 0o755)?;
+        set_directory_mode(&directory, PRIVATE_DIR_MODE)?;
     }
     Ok(())
 }
@@ -1976,6 +2368,108 @@ mod tests {
     }
 
     #[test]
+    fn the_hash_writes_the_length_of_every_path_and_of_every_content() {
+        let root = temp_dir("hash-length");
+        write(&root.join("a"), "bc");
+        let (hash, full, files, bytes) = content_hash(&root).unwrap();
+
+        // The hash of the file `a` with the content `bc` is the length of
+        // the path, the path, the length of the content and the content.
+        assert_eq!(
+            full,
+            "3fafa1cf2f19a7c1129beb20cf0983f73a489a221fc0dd2f16d1be292d089205"
+        );
+        assert_eq!(hash, full[..HASH_LENGTH]);
+        assert_eq!(files, 1);
+        assert_eq!(bytes, 2);
+    }
+
+    #[test]
+    fn two_shapes_of_the_same_bytes_hold_two_hashes() {
+        let first = temp_dir("hash-shape-first");
+        write(&first.join("a"), "\u{0}b\u{0}c");
+        let second = temp_dir("hash-shape-second");
+        write(&second.join("a"), "");
+        write(&second.join("b"), "c");
+
+        let one = content_hash(&first).unwrap().1;
+        let two = content_hash(&second).unwrap().1;
+
+        // The old hash joined the path and the content with a null byte, so
+        // the two shapes held the same hash.
+        assert_ne!(one, two);
+        assert_eq!(
+            two,
+            "67828f4f00b886c92b0a49b80f76c7317caa87d8501a0d4cb2a35be3fa209cfd"
+        );
+    }
+
+    #[test]
+    fn a_folder_of_the_short_hash_that_holds_another_version_gets_a_longer_name() {
+        let store = temp_dir("version-name-store");
+        let parent = store.join("skills").join("demo");
+        fs::create_dir_all(&parent).unwrap();
+        let full = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        fs::create_dir_all(parent.join(&full[..HASH_LENGTH])).unwrap();
+        write(
+            &parent.join(&full[..HASH_LENGTH]).join("other.txt"),
+            "other\n",
+        );
+
+        let name = version_name(&store, "demo", full).unwrap();
+
+        assert_eq!(name, full[..HASH_LENGTH * 2]);
+    }
+
+    #[test]
+    fn a_folder_of_the_short_hash_that_holds_the_version_keeps_its_name() {
+        let store = temp_dir("version-name-same-store");
+        let parent = store.join("skills").join("demo");
+        fs::create_dir_all(&parent).unwrap();
+        let full = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let folder = parent.join(&full[..HASH_LENGTH]);
+        fs::create_dir_all(&folder).unwrap();
+        write(&folder.join("a"), "bc");
+        let (_, stored, _, _) = content_hash(&folder).unwrap();
+
+        let name = version_name(&store, "demo", &stored).unwrap();
+
+        assert_eq!(name, stored[..HASH_LENGTH]);
+    }
+
+    #[test]
+    fn the_copy_of_a_zip_entry_stops_at_the_limit() {
+        let path = temp_dir("copy-entry").join("out.bin");
+        let mut out = fs::File::create(&path).unwrap();
+        let content: Vec<u8> = (0..1024u32).map(|byte| byte as u8).collect();
+
+        let read = copy_entry(&mut content.as_slice(), &mut out, 100).unwrap();
+
+        // The copy reads one byte more than the limit, so the caller knows
+        // that the limit is over, and it writes only the bytes that are
+        // within the limit.
+        assert_eq!(read, 101);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn a_script_without_an_extension_is_read_by_its_shebang() {
+        assert_eq!(shebang_language(b"#!/bin/sh\necho hello\n"), Some("shell"));
+        assert_eq!(shebang_language(b"#!/bin/bash\n"), Some("shell"));
+        assert_eq!(shebang_language(b"#!/bin/zsh\n"), Some("shell"));
+        assert_eq!(shebang_language(b"#!/bin/dash\n"), Some("shell"));
+        assert_eq!(
+            shebang_language(b"#!/usr/bin/env python3\n"),
+            Some("python")
+        );
+        assert_eq!(shebang_language(b"#!/usr/bin/node\n"), Some("javascript"));
+        assert_eq!(shebang_language(b"#!/usr/bin/deno\n"), Some("javascript"));
+        assert_eq!(shebang_language(b"#!/usr/bin/bun\n"), Some("javascript"));
+        assert_eq!(shebang_language(b"#!/usr/bin/perl\n"), Some("other"));
+        assert_eq!(shebang_language(b"echo hello\n"), None);
+    }
+
+    #[test]
     fn the_stored_copy_is_read_only() {
         let source = skill_fixture("read-only");
         let store = temp_dir("read-only-store");
@@ -1983,9 +2477,27 @@ mod tests {
         let result = add_skill(&options(&source, &store)).unwrap();
 
         let stored = store.join("skills/demo").join(&result.version.hash);
-        assert_eq!(mode_of(&stored.join("run.py")), 0o444);
-        assert_eq!(mode_of(&stored.join("SKILL.md")), 0o444);
-        assert_eq!(mode_of(&stored), 0o555);
+        assert_eq!(mode_of(&stored.join("run.py")), 0o400);
+        assert_eq!(mode_of(&stored.join("SKILL.md")), 0o400);
+        assert_eq!(mode_of(&stored), 0o500);
+    }
+
+    #[test]
+    fn the_store_holds_its_state_in_private_folders() {
+        let source = skill_fixture("private-store");
+        let store = temp_dir("private-store-store");
+
+        let result = add_skill(&options(&source, &store)).unwrap();
+
+        assert_eq!(mode_of(&store), 0o700);
+        assert_eq!(mode_of(&store.join("skills")), 0o700);
+        assert_eq!(mode_of(&store.join("skills/demo")), 0o700);
+        assert_eq!(mode_of(&store.join("records")), 0o700);
+        assert_eq!(mode_of(&store.join("locks")), 0o700);
+        assert_eq!(mode_of(&store.join("records/demo.json")), 0o600);
+        let stored = store.join("skills/demo").join(&result.version.hash);
+        assert_eq!(mode_of(&stored), 0o500);
+        assert_eq!(mode_of(&stored.join("run.py")), 0o400);
     }
 
     #[test]
@@ -2688,6 +3200,7 @@ mod tests {
                     severity: Severity::High,
                     path: SECRET.to_string(),
                     line: Some(1),
+                    detail: Some(SECRET.to_string()),
                 }],
                 tier: Tier::None,
                 tier_reasons: vec![SECRET.to_string()],

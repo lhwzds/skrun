@@ -68,9 +68,25 @@ fn the_stored_copy_is_read_only() {
     let hash = stdout.split_whitespace().nth(2).unwrap().to_string();
     let stored = store.join("skills/demo").join(&hash);
 
-    assert_eq!(mode_of(&stored.join("run.py")), 0o444);
-    assert_eq!(mode_of(&stored.join("SKILL.md")), 0o444);
-    assert_eq!(mode_of(&stored), 0o555);
+    assert_eq!(mode_of(&stored.join("run.py")), 0o400);
+    assert_eq!(mode_of(&stored.join("SKILL.md")), 0o400);
+    assert_eq!(mode_of(&stored), 0o500);
+}
+
+#[test]
+fn the_store_keeps_its_state_to_itself() {
+    let source = skill_fixture("store-private-store");
+    let store = temp_dir("store-private-store-store");
+
+    let output = run(&["catalog", "add", &path(&source), "--store", &path(&store)]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(mode_of(&store), 0o700);
+    assert_eq!(mode_of(&store.join("skills")), 0o700);
+    assert_eq!(mode_of(&store.join("records")), 0o700);
+    assert_eq!(mode_of(&store.join("locks")), 0o700);
+    assert_eq!(mode_of(&store.join("records/demo.json")), 0o600);
+    assert_clean(&output);
 }
 
 #[test]

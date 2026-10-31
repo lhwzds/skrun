@@ -32,17 +32,20 @@
 //! - catalog search results
 //!
 //! ## Depends On
+//! - regex
 //! - serde_json
 //!
 //! ## Verify
 //! - cargo test -p skrun
 
 use anyhow::{Context, Result, bail};
+use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 
 /// Schema version written into every generated catalog index.
 pub const INDEX_SCHEMA_VERSION: u32 = 1;
@@ -1353,15 +1356,171 @@ pub(crate) fn script_language(path: &Path) -> Option<&'static str> {
 /// docstring holds no import, not even when it looks like one.
 ///
 /// A relative import names a module of the skill itself, so it is left out.
+///
+/// An import that follows a colon on the same line is an import as well,
+/// so `if True: import subprocess` holds the module `subprocess` and
+/// `try: import socket` holds the module `socket`.
+///
+/// A call of `__import__` with a string and a call of
+/// `importlib.import_module` with a string import a module as well, so
+/// `__import__("socket")` holds the module `socket`.
 pub fn python_imports(text: &str) -> Vec<String> {
     let mut imports = BTreeSet::new();
     for line in logical_lines(text) {
         read_line_imports(&line, &mut imports);
     }
+    for module in dynamic_imports(text) {
+        imports.insert(module);
+    }
     imports
         .into_iter()
         .filter(|name| name != "__future__")
         .collect()
+}
+
+/// Whether a python text can be tokenised.
+///
+/// A python text that holds a string that is never closed, a bracket that
+/// is never closed or an indentation that the interpreter refuses cannot be
+/// tokenised, so the imports of the text cannot be read with certainty.
+pub fn python_parses(text: &str) -> bool {
+    if !printable_only(text) {
+        return false;
+    }
+    let Some(mask) = python_code_mask(text) else {
+        return false;
+    };
+    indentation_fits(text, &mask)
+}
+
+/// Whether a python text holds only characters that the tokenizer accepts.
+///
+/// The tokenizer of the interpreter refuses a text that holds a null byte
+/// or another character that cannot be printed, so such a text cannot be
+/// tokenised.
+fn printable_only(text: &str) -> bool {
+    text.bytes()
+        .all(|byte| matches!(byte, b'\t' | b'\n' | b'\r' | 0x0c) || (byte >= 0x20 && byte != 0x7f))
+}
+
+/// Whether the lines of a python text fit together.
+///
+/// The interpreter reads the indentation of the lines: a line that is
+/// indented deeper than the line before it needs a line that opens a block,
+/// and a line that is indented less than the line before it needs an outer
+/// level of the indentation. A line that goes on with a line that never
+/// comes is a line that the interpreter refuses as well.
+///
+/// A text that does not fit is a text that the interpreter refuses, so it is
+/// a text that cannot be tokenised.
+fn indentation_fits(text: &str, mask: &[u8]) -> bool {
+    let bytes = text.as_bytes();
+    // The levels of the indentation that are open.
+    let mut levels: Vec<usize> = Vec::new();
+    // Whether the line of code that was read last opens a block.
+    let mut opens = false;
+    // Whether the last line went on with the line that comes now.
+    let mut continuing = false;
+    // The brackets that are open.
+    let mut depth: i64 = 0;
+    let mut first = true;
+    // The last character of code of the line of code that is being read.
+    let mut last_code = 0u8;
+    // The code of the line of code that is being read.
+    let mut logical_code = 0usize;
+    // Whether the line that is read now starts a line of code.
+    let mut at_line_start = true;
+    let mut offset = 0usize;
+    for line in text.split('\n') {
+        let start = offset;
+        let end = start + line.len();
+        offset = end + 1;
+        let depth_at_start = depth;
+        // The columns of the indentation of the line.
+        let mut columns = 0usize;
+        let mut index = start;
+        while index < end {
+            match bytes[index] {
+                b' ' => columns += 1,
+                b'\t' => columns = (columns / 8 + 1) * 8,
+                b'\x0c' => columns = 0,
+                _ => break,
+            }
+            index += 1;
+        }
+        // The code of the line.
+        let mut code = 0usize;
+        let mut continued = false;
+        for index in start..end {
+            if mask[index] & OUTSIDE == 0 {
+                continue;
+            }
+            match bytes[index] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b'\\' => {
+                    // A line that ends with a backslash goes on with the line
+                    // that comes now.
+                    continued = index + 1 == end || (index + 2 == end && bytes[index + 1] == b'\r');
+                }
+                _ => {}
+            }
+            if bytes[index].is_ascii_whitespace() {
+                // A line that holds nothing but spaces holds no code.
+                continue;
+            }
+            code += 1;
+            logical_code += 1;
+            last_code = bytes[index];
+        }
+        let inside = continuing || depth_at_start > 0;
+        if at_line_start && !inside && code > 0 {
+            if first {
+                // The first line of a text starts at the left margin.
+                if columns != 0 {
+                    return false;
+                }
+                levels.push(columns);
+                first = false;
+            } else if columns > *levels.last().unwrap_or(&0) {
+                // A line that is indented deeper needs a block.
+                if !opens {
+                    return false;
+                }
+                levels.push(columns);
+            } else if columns < *levels.last().unwrap_or(&0) {
+                // A line that is indented less needs an outer level.
+                while levels.len() > 1 && *levels.last().unwrap_or(&0) > columns {
+                    levels.pop();
+                }
+                if *levels.last().unwrap_or(&0) != columns {
+                    return false;
+                }
+            }
+        }
+        // The line of code ends here when the line does not go on, when no
+        // bracket is open and when the line does not lie inside a string:
+        // the line that comes now starts a new line of code.
+        let ends = !continued && depth == 0 && (end >= bytes.len() || mask[end] & OUTSIDE != 0);
+        if ends {
+            if logical_code > 0 {
+                // The line of code ends with a colon, so the line that comes
+                // now may be indented deeper.
+                opens = last_code == b':';
+            }
+            last_code = 0;
+            logical_code = 0;
+        }
+        at_line_start = ends;
+        continuing = continued;
+    }
+    // A line that goes on with a line that never comes is a text that the
+    // interpreter refuses.
+    let trimmed = text.strip_suffix('\n').unwrap_or(text);
+    if trimmed.ends_with('\\') && mask[trimmed.len() - 1] & OUTSIDE != 0 {
+        return false;
+    }
+    true
 }
 
 /// The logical lines of a python text.
@@ -1481,10 +1640,42 @@ fn logical_lines(text: &str) -> Vec<String> {
 /// A line can hold more than one statement, so the line is split at every
 /// semicolon that is not inside a string, and every statement of the line
 /// is read on its own.
+///
+/// A statement can hold an import behind a colon, so the statement is split
+/// at every colon as well, and every part behind a colon is read on its own.
 fn read_line_imports(line: &str, imports: &mut BTreeSet<String>) {
     for statement in split_statements(line) {
         read_imports(statement, imports);
+        for part in split_at_colons(statement).into_iter().skip(1) {
+            read_imports(part, imports);
+        }
     }
+}
+
+/// The parts of a statement, split at every colon.
+///
+/// The statement is split at every colon that is not inside a string and not
+/// inside a comment, so `if True: import subprocess` holds two parts and a
+/// colon of a string stays a part of the string.
+fn split_at_colons(statement: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < statement.len() {
+        let (character, length) = character_at(statement, index);
+        match character {
+            '\'' | '"' => index = end_of_string(statement, index),
+            '#' => break,
+            ':' => {
+                parts.push(&statement[start..index]);
+                index += length;
+                start = index;
+            }
+            _ => index += length,
+        }
+    }
+    parts.push(&statement[start..]);
+    parts
 }
 
 /// The statements of a line of python.
@@ -1575,6 +1766,572 @@ fn character_at(text: &str, index: usize) -> (char, usize) {
     }
 }
 
+/// The call of `__import__` and the call of `importlib.import_module`.
+///
+/// The call holds the name of the module in a string, so the name of the
+/// module is the literal of the match. A literal of python can hold a
+/// prefix, so `r"socket"` and `b'subprocess'` are literals as well. The
+/// name of the literal is read with its escapes, so the name of the module
+/// can be written in more than one way.
+static DYNAMIC_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:__import__|importlib\s*\.\s*import_module)\s*\(\s*(?P<literal>(?:[bB][rR]|[rR][bB]|[rR]|[uU]|[bB])?(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'))"#,
+    )
+    .expect("a pattern that compiles")
+});
+
+/// The modules that a python text imports with a call.
+///
+/// A call of `__import__` with a string and a call of
+/// `importlib.import_module` with a string import a module, so the module
+/// is read as an import of the script.
+///
+/// The string of the call can hold a prefix of python and escapes, so
+/// `__import__(r"socket")` holds the module `socket` as well.
+///
+/// A call inside a string or inside a comment is no call at all, so it is
+/// left out.
+fn dynamic_imports(text: &str) -> Vec<String> {
+    let Some(mask) = python_code_mask(text) else {
+        return Vec::new();
+    };
+    let mut modules = Vec::new();
+    for captures in DYNAMIC_IMPORT.captures_iter(text) {
+        let Some(found) = captures.get(0) else {
+            continue;
+        };
+        if mask.get(found.start()).copied().unwrap_or(0) & CODE == 0 {
+            continue;
+        }
+        let Some(literal) = captures.name("literal").map(|literal| literal.as_str()) else {
+            continue;
+        };
+        let Some(name) = literal_module_name(literal) else {
+            continue;
+        };
+        modules.push(name);
+    }
+    modules
+}
+
+/// The module of a string literal of a call of the loader.
+///
+/// A literal of python can hold a prefix: `r`, `u`, `b` and the
+/// combinations of `b` and `r`. The prefix is no part of the name of the
+/// module.
+///
+/// The escapes of the literal are decoded, so `"sock\x65t"` names the
+/// module `socket` and `"\163ocket"` names the module `socket` as well.
+/// The escapes of a raw string are text of the string, so they are not
+/// decoded.
+///
+/// The name of the module is the top level name of the path of the module,
+/// so `"os.path"` names the module `os`.
+fn literal_module_name(literal: &str) -> Option<String> {
+    let mut characters = literal.chars();
+    let mut prefix = String::new();
+    for character in characters.by_ref() {
+        if matches!(character, 'r' | 'R' | 'u' | 'U' | 'b' | 'B') {
+            prefix.push(character);
+            continue;
+        }
+        if character != '"' && character != '\'' {
+            return None;
+        }
+        let quote = character;
+        let rest: String = characters.collect();
+        let inner = rest.strip_suffix(quote)?;
+        let name = if prefix.contains('r') || prefix.contains('R') {
+            inner.to_string()
+        } else {
+            decode_escapes(inner)?
+        };
+        return module_name(&name);
+    }
+    None
+}
+
+/// The text of a string literal with the escapes of python decoded.
+///
+/// The escapes `\\`, `\'`, `\"`, `\n`, `\r`, `\t`, `\0`, `\a`, `\b`,
+/// `\f`, `\v`, `\xNN`, `\uNNNN` and `\UNNNNNNNN` are decoded. An
+/// escape of one to three octal digits is decoded as well, so `\163`
+/// is the character `s`. An escape that is not known is text of the
+/// string, so the backslash stays in front of it. A backslash at the end
+/// of the text is no literal at all.
+fn decode_escapes(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            out.push(character);
+            continue;
+        }
+        let escape = characters.next()?;
+        match escape {
+            '\\' => out.push('\\'),
+            '\'' => out.push('\''),
+            '"' => out.push('"'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'a' => out.push('\u{7}'),
+            'b' => out.push('\u{8}'),
+            'f' => out.push('\u{c}'),
+            'v' => out.push('\u{b}'),
+            '\n' => {}
+            'x' => out.push(hex_escape(&mut characters, 2)?),
+            'u' => out.push(hex_escape(&mut characters, 4)?),
+            'U' => out.push(hex_escape(&mut characters, 8)?),
+            '0'..='7' => out.push(octal_escape(&mut characters, escape)?),
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The character of a hexadecimal escape of a string.
+///
+/// The escape holds a fixed number of hexadecimal digits, so a shorter or a
+/// longer escape is no escape at all.
+fn hex_escape(characters: &mut impl Iterator<Item = char>, length: usize) -> Option<char> {
+    let mut value = 0u32;
+    for _ in 0..length {
+        let digit = characters.next()?.to_digit(16)?;
+        value = value * 16 + digit;
+    }
+    char::from_u32(value)
+}
+
+/// The character of an octal escape of a string.
+///
+/// The escape of python holds one to three octal digits, so `\163` is the
+/// character `s` and `\7` is the character of the bell. A digit that is
+/// no octal digit ends the escape, so the escape of `\08` is the
+/// character of the null byte.
+fn octal_escape(
+    characters: &mut std::iter::Peekable<std::str::Chars>,
+    first: char,
+) -> Option<char> {
+    let mut value = first.to_digit(8)?;
+    for _ in 0..2 {
+        let Some(digit) = characters
+            .peek()
+            .copied()
+            .and_then(|digit| digit.to_digit(8))
+        else {
+            break;
+        };
+        value = value * 8 + digit;
+        characters.next();
+    }
+    char::from_u32(value)
+}
+
+/// The flag of a byte that is code.
+///
+/// The byte of a string or of a comment is no code, so a search in the code
+/// never finds a word of a string. The expression of an f-string is code,
+/// because the interpreter runs it.
+const CODE: u8 = 1;
+
+/// The flag of a byte that is code outside of a string.
+///
+/// The lines of a string are no lines of code, so the indentation of the
+/// text is read with this flag.
+const OUTSIDE: u8 = 2;
+
+/// The code of a python text.
+///
+/// The result holds, for every byte of the text, the flags of the byte. A
+/// byte of a string or of a comment is no code, so a search in the code
+/// never finds a word of a string. The expression of an f-string is code,
+/// because the interpreter runs it, but it is no code outside of a string.
+///
+/// The function returns `None` when the text cannot be tokenised: a string
+/// that is never closed, a bracket that is never closed or an expression of
+/// an f-string that is never closed.
+fn python_code_mask(text: &str) -> Option<Vec<u8>> {
+    let mut mask = vec![0u8; text.len()];
+    scan_code(text, 0, &mut mask, 0, None)?;
+    Some(mask)
+}
+
+/// The deepest nesting of brackets that the interpreter accepts.
+///
+/// The tokenizer of CPython refuses a text that nests its brackets deeper
+/// than this, so a text that nests them deeper cannot be tokenised.
+const MAX_NESTING: i64 = 200;
+
+/// Scan the code of a python text from an offset.
+///
+/// The scan marks the code bytes in the mask. The depth counts the brackets
+/// that are open. The scan of a level ends at the bracket that closes it,
+/// and the scan of the outer level ends at the end of the text. The
+/// closing bracket of a level is the bracket that closes the bracket that
+/// opened the level, so a bracket that closes another bracket is no
+/// bracket of the interpreter. The function returns `None` when the text
+/// cannot be tokenised.
+fn scan_code(
+    text: &str,
+    index: usize,
+    mask: &mut [u8],
+    depth: i64,
+    closing: Option<u8>,
+) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = index;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match byte {
+            b'\'' | b'"' => {
+                let triple = is_triple_at(bytes, index);
+                index = if is_fstring(bytes, index) {
+                    scan_fstring(text, index, mask, byte, triple)?
+                } else {
+                    scan_string(text, index, byte, triple)?
+                };
+            }
+            b'\\' => {
+                // A backslash goes on with the line that comes now, so
+                // nothing but the end of the line may follow it.
+                if !ends_the_line(bytes, index) {
+                    return None;
+                }
+                mask[index] |= CODE | OUTSIDE;
+                index += 1;
+            }
+            b'#' => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'(' | b'[' | b'{' => {
+                if depth + 1 > MAX_NESTING {
+                    return None;
+                }
+                mask[index] |= CODE | OUTSIDE;
+                index = scan_code(
+                    text,
+                    index + 1,
+                    mask,
+                    depth + 1,
+                    Some(closing_bracket(byte)),
+                )?;
+            }
+            b')' | b']' | b'}' => {
+                if depth == 0 {
+                    // A closing bracket that closes nothing.
+                    return None;
+                }
+                if closing != Some(byte) {
+                    // A closing bracket that closes another bracket: the
+                    // interpreter refuses the text.
+                    return None;
+                }
+                mask[index] |= CODE | OUTSIDE;
+                // The bracket is closed, so the scan of this level is done.
+                return Some(index + 1);
+            }
+            _ => {
+                mask[index] |= CODE | OUTSIDE;
+                index += 1;
+            }
+        }
+    }
+    if depth != 0 {
+        // A bracket that is never closed: the interpreter refuses the text.
+        return None;
+    }
+    Some(index)
+}
+
+/// The bracket that closes an opening bracket.
+///
+/// The bracket that closes a parenthesis is a parenthesis, the bracket that
+/// closes a bracket is a bracket and the bracket that closes a brace is a
+/// brace.
+fn closing_bracket(byte: u8) -> u8 {
+    match byte {
+        b'(' => b')',
+        b'[' => b']',
+        _ => b'}',
+    }
+}
+
+/// Scan a string of a python text from its opening quote.
+///
+/// The scan returns the index after the closing quote of the string, or
+/// `None` when the string is never closed.
+fn scan_string(text: &str, index: usize, quote: u8, triple: bool) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = index + if triple { 3 } else { 1 };
+    loop {
+        if index >= bytes.len() {
+            return None;
+        }
+        let byte = bytes[index];
+        if byte == b'\\' {
+            index = skip_backslashes(text, index, quote, false);
+            continue;
+        }
+        if triple {
+            if byte == quote && is_triple_at(bytes, index) {
+                return Some(index + 3);
+            }
+        } else if byte == quote {
+            return Some(index + 1);
+        } else if byte == b'\n' {
+            // A string that is not a string of three quotes cannot run over
+            // a newline, so the string is never closed.
+            return None;
+        }
+        index += 1;
+    }
+}
+
+/// Skip the backslashes of a string and the character that they stand in
+/// front of.
+///
+/// An odd number of backslashes keeps the quote from ending the string, so
+/// the quote is skipped with them. The character that the backslashes stand
+/// in front of is text of the string, so it is skipped as well. A brace of
+/// an f-string is never skipped, because the expression of an f-string runs
+/// even when a backslash stands in front of its brace.
+fn skip_backslashes(text: &str, index: usize, quote: u8, fstring: bool) -> usize {
+    let bytes = text.as_bytes();
+    let mut look = index;
+    while look < bytes.len() && bytes[look] == b'\\' {
+        look += 1;
+    }
+    if look < bytes.len() && bytes[look] == quote && (look - index) % 2 == 1 {
+        // The quote is escaped, so the string goes on.
+        return look + 1;
+    }
+    if look < bytes.len() && bytes[look] != quote && !(fstring && is_brace(bytes[look])) {
+        // The character that the backslashes stand in front of is text of
+        // the string.
+        return look + 1;
+    }
+    look
+}
+
+/// Whether a backslash ends the line of the code.
+///
+/// A backslash goes on with the line that comes now, so nothing but the end
+/// of the line may follow it. A carriage return may follow it, because a
+/// text that ends its lines with a carriage return ends the line with the
+/// carriage return and the newline.
+fn ends_the_line(bytes: &[u8], index: usize) -> bool {
+    match bytes.get(index + 1) {
+        Some(b'\n') => true,
+        Some(b'\r') => bytes.get(index + 2) == Some(&b'\n'),
+        _ => false,
+    }
+}
+
+/// Whether a byte is a brace of an f-string.
+fn is_brace(byte: u8) -> bool {
+    byte == b'{' || byte == b'}'
+}
+
+/// Scan an f-string of a python text from its opening quote.
+///
+/// The expression of an f-string is code, because the interpreter runs it.
+/// The scan marks the code of the expression in the mask and returns the
+/// index after the closing quote of the string, or `None` when the string
+/// is never closed.
+fn scan_fstring(
+    text: &str,
+    index: usize,
+    mask: &mut [u8],
+    quote: u8,
+    triple: bool,
+) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = index + if triple { 3 } else { 1 };
+    loop {
+        if index >= bytes.len() {
+            return None;
+        }
+        let byte = bytes[index];
+        if byte == b'\\' {
+            index = skip_backslashes(text, index, quote, true);
+            continue;
+        }
+        if triple {
+            if byte == quote && is_triple_at(bytes, index) {
+                return Some(index + 3);
+            }
+        } else if byte == quote {
+            return Some(index + 1);
+        }
+        if byte == b'\n' && !triple {
+            // A string that is not a string of three quotes cannot run over
+            // a newline, so the string is never closed.
+            return None;
+        }
+        if byte == b'{' {
+            // Two braces in a row are one brace of the text of the string.
+            if index + 1 < bytes.len() && bytes[index + 1] == b'{' {
+                index += 2;
+                continue;
+            }
+            index = scan_expression(text, index + 1, mask, quote)?;
+            continue;
+        }
+        if byte == b'}' {
+            if index + 1 < bytes.len() && bytes[index + 1] == b'}' {
+                index += 2;
+                continue;
+            }
+            // A single brace is not allowed in an f-string, so the text
+            // cannot be tokenised.
+            return None;
+        }
+        index += 1;
+    }
+}
+
+/// Scan the expression of an f-string of a python text.
+///
+/// The scan marks the code of the expression in the mask and returns the
+/// index after the closing brace of the expression, or `None` when the
+/// expression is never closed.
+fn scan_expression(text: &str, index: usize, mask: &mut [u8], quote: u8) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = index;
+    // The brackets that are open in the expression. The stack holds the
+    // bracket that closes every open bracket, so a bracket that closes
+    // another bracket is no bracket of the interpreter.
+    let mut open: Vec<u8> = Vec::new();
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match byte {
+            b'\'' | b'"' => {
+                let triple = is_triple_at(bytes, index);
+                index = if is_fstring(bytes, index) {
+                    scan_fstring(text, index, mask, byte, triple)?
+                } else {
+                    scan_string(text, index, byte, triple)?
+                };
+            }
+            b'\\' => {
+                // A backslash goes on with the line that comes now, so
+                // nothing but the end of the line may follow it.
+                if !ends_the_line(bytes, index) {
+                    return None;
+                }
+                index += 1;
+            }
+            b'#' => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'(' | b'[' | b'{' => {
+                mask[index] |= CODE;
+                open.push(closing_bracket(byte));
+                index += 1;
+            }
+            b')' | b']' => {
+                mask[index] |= CODE;
+                match open.pop() {
+                    Some(closing) if closing == byte => {}
+                    // A bracket that closes another bracket: the
+                    // interpreter refuses the text.
+                    _ => return None,
+                }
+                index += 1;
+            }
+            b'}' => {
+                match open.last() {
+                    // The brace ends the expression of the f-string.
+                    None => return Some(index + 1),
+                    Some(b'}') => {
+                        mask[index] |= CODE;
+                        open.pop();
+                        index += 1;
+                    }
+                    // A brace that closes another bracket: the interpreter
+                    // refuses the text.
+                    Some(_) => return None,
+                }
+            }
+            b':' if open.is_empty() => {
+                // The format of the value follows the colon. The format is
+                // text of the string, so it is read as text.
+                return scan_format(text, index + 1, mask, quote);
+            }
+            b'!' if open.is_empty() && bytes.get(index + 1) != Some(&b'=') => {
+                // The conversion of the value follows the exclamation mark.
+                index += 2;
+            }
+            _ => {
+                mask[index] |= CODE;
+                index += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Scan the format of the value of an f-string.
+///
+/// The format is text of the string, so the characters of the format are no
+/// code. The format can hold a replacement field of its own, and the field
+/// is code.
+///
+/// The scan returns the index after the closing brace of the replacement
+/// field of the value.
+fn scan_format(text: &str, index: usize, mask: &mut [u8], quote: u8) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = index;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' => {
+                if index + 1 < bytes.len() && bytes[index + 1] == b'{' {
+                    index += 2;
+                    continue;
+                }
+                index = scan_expression(text, index + 1, mask, quote)?;
+                continue;
+            }
+            b'}' => {
+                // The format of a value holds no brace of its own, so the
+                // brace ends the field of the value.
+                return Some(index + 1);
+            }
+            b'\\' => {
+                index = skip_backslashes(text, index, quote, true);
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+/// Whether the string that starts at an offset is an f-string.
+///
+/// The prefix of a string holds the letters that tell what the string is:
+/// the `f` of an f-string, the `r` of a raw string and the `b` of a bytes
+/// string.
+fn is_fstring(bytes: &[u8], index: usize) -> bool {
+    let mut start = index;
+    while start > 0 {
+        match bytes[start - 1] {
+            b'r' | b'R' | b'b' | b'B' | b'u' | b'U' | b'f' | b'F' => start -= 1,
+            _ => break,
+        }
+    }
+    bytes[start..index]
+        .iter()
+        .any(|byte| *byte == b'f' || *byte == b'F')
+}
+
 /// The modules that one line of python imports.
 ///
 /// The line is read as a whole, so a line that holds more than one module
@@ -1617,6 +2374,7 @@ fn after_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
 /// module `b`. A name that does not start with a letter or an underscore is
 /// no module at all.
 fn module_name(text: &str) -> Option<String> {
+    let text = text.trim_matches(|character| character == '"' || character == '\'');
     let word = text.split_whitespace().next().unwrap_or_default();
     let head = word.split('.').next().unwrap_or_default();
     let mut characters = head.chars();
@@ -1844,6 +2602,801 @@ pub(crate) fn line_has_secret(line: &str) -> bool {
         || has_gitlab_token(line)
         || has_google_key(line)
         || has_slack_token(line)
+        || has_generic_secret(line)
+}
+
+/// The key of an assignment that holds a secret.
+///
+/// The key is the name of a password, of a token, of a key or of a secret.
+static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)",
+    )
+    .expect("a pattern that compiles")
+});
+
+/// Whether a line holds a key and a value that look like a secret.
+///
+/// The key of the assignment is the name of a password, of a token, of a key
+/// or of a secret, and the value of the assignment holds at least six
+/// characters that are no space.
+///
+/// The name of the secret has to be a whole word of the key, so a key that
+/// holds the name in the middle of a longer word names no secret:
+/// `max_tokens` and `tokenizer` name no secret, but `token` and `api_key`
+/// do.
+///
+/// A value that is a placeholder is no secret, so a template of a skill is
+/// not a finding: `<token>`, `${token}`, `{{token}}`, `xxxxxx`, `changeme`,
+/// `example`, `password`, `secret`, `your_password` and `your-api-key` are
+/// placeholders. A value that only holds a placeholder in the middle of it is
+/// a secret, so `abcchangeme123` is a secret.
+fn has_generic_secret(line: &str) -> bool {
+    for assignment in assignments(line, is_secret_key) {
+        if !is_secret_value(&assignment) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// Whether the key of an assignment names a secret.
+///
+/// The name of the secret has to be a whole word of the key, so the name
+/// may not sit in the middle of a longer word: `max_tokens`, `query_tokens`
+/// and `tokenizer` name no secret, but `token`, `api_key`, `x-api-key`,
+/// `API_KEY`, `client_secret` and `POSTGRES_PASSWORD` do.
+///
+/// A name behind a dash is a name of its own, so `x-api-key` names a
+/// secret. A name behind an underscore is a name of its own as well when it
+/// is the last part of the key, so `POSTGRES_PASSWORD` names a secret.
+fn is_secret_key(key: &str) -> bool {
+    for found in SECRET_KEY.find_iter(key) {
+        if !is_whole_name(key, found.start(), found.end()) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// Whether the name of a secret is a whole word of the key.
+///
+/// The name may not follow a letter or a digit and it may not be followed by
+/// a letter, a digit or an underscore, so the name sits in no longer word.
+/// A name behind an underscore is a whole word when nothing follows it, so
+/// the name is the last part of the key.
+fn is_whole_name(key: &str, start: usize, end: usize) -> bool {
+    let before = key[..start].chars().last();
+    let after = key[end..].chars().next();
+    if before.is_some_and(|character| character.is_alphanumeric()) {
+        return false;
+    }
+    if after.is_some_and(|character| character.is_alphanumeric() || character == '_') {
+        return false;
+    }
+    if before == Some('_') && !key[end..].is_empty() {
+        return false;
+    }
+    true
+}
+
+/// Whether a value of an assignment looks like a secret.
+///
+/// The value holds at least six characters that are no space. A value that
+/// is a placeholder is no secret.
+///
+/// A value that names a shell variable, a value that holds a call or an
+/// expression and a value that names a type of Python hold no secret
+/// either, so `$KEY`, `os.environ["KEY"]` and `Token = []` are no
+/// secrets.
+///
+/// The whole expression of the value is read, so a call and an expression
+/// behind the value are told apart from a value that holds a secret: the
+/// value of `password: get_secret (arg)` and the value of
+/// `password: lookup = other` hold no secret.
+///
+/// The expression ends at the end of the assignment, so the fields that
+/// follow the value and the brackets that hold the value are no part of
+/// the expression: the value of `{password: hunter2xyz, retries: [1, 2]}`
+/// holds a secret.
+///
+/// The expression of a value in quotes goes on behind the closing quote of
+/// the value, so a call behind the value holds no secret: the value of
+/// `password: "abcdef" + get_secret()` holds no secret.
+///
+/// A value in quotes is a text and no type of Python, so the value
+/// `"Hunter2xyz"` of `password: "Hunter2xyz"` holds a secret.
+///
+/// The value is read as it is written, so the spaces of a value in quotes
+/// are part of the value: the value `" changeme "` is no placeholder and so
+/// it is a secret.
+fn is_secret_value(assignment: &Assignment) -> bool {
+    let value = assignment.value.as_str();
+    if value
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count()
+        < 6
+    {
+        return false;
+    }
+    if value.starts_with('$') || value.starts_with('%') {
+        // A shell variable and an environment variable hold no secret.
+        return false;
+    }
+    if holds_expression(&assignment.value) || holds_expression(&assignment.expression) {
+        // A call and an expression hold no secret.
+        return false;
+    }
+    if holds_closed_placeholder(&assignment.expression) {
+        // A closed placeholder and more text behind it hold a secret, so
+        // `<token>actual-secret<end>` is a secret.
+        return true;
+    }
+    if !assignment.quoted && is_type_annotation(value, &assignment.expression) {
+        // A type of Python holds no secret.
+        return false;
+    }
+    if is_caps_placeholder(value) {
+        // A placeholder in caps holds no secret.
+        return false;
+    }
+    !is_placeholder(value)
+}
+
+/// Whether the expression of a value holds a call or an expression.
+///
+/// A value that holds a bracket holds a call or an expression, and a value
+/// that holds an assignment holds an expression as well, so the value holds
+/// no secret.
+///
+/// The value itself is read as well, so a bracket that ends the value is
+/// no bracket of the value: the value of `password: value)` holds a
+/// bracket and so it holds no secret.
+fn holds_expression(expression: &str) -> bool {
+    expression
+        .chars()
+        .any(|character| matches!(character, '(' | ')' | '[' | ']' | '{' | '}'))
+        || expression.contains(" = ")
+}
+
+/// Whether the expression holds a closed placeholder and more text behind
+/// it.
+///
+/// A placeholder that is closed and that is followed by more text holds a
+/// secret, so `<token>actual-secret<end>` is a secret. A value that names
+/// a shell variable and a value that holds a brace hold no secret, so
+/// `${token}actual-secret` is no secret.
+fn holds_closed_placeholder(expression: &str) -> bool {
+    for (open, close) in [("<", ">"), ("${", "}"), ("{{", "}}")] {
+        let Some(rest) = expression.strip_prefix(open) else {
+            continue;
+        };
+        if let Some(at) = rest.find(close)
+            && at + close.len() < rest.len()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the value names a type of Python.
+///
+/// A type is a name that starts with a capital, so the value `Token` of
+/// `token: Token = []` names a type and holds no secret. The name has to be
+/// followed by an equals sign or by the end of the line, so the value
+/// `Token` of `token: Token` names a type as well.
+///
+/// The name has to be a name that is not in quotes, so the value
+/// `"Hunter2xyz"` of `password: "Hunter2xyz"` names no type and so it holds
+/// a secret.
+fn is_type_annotation(value: &str, expression: &str) -> bool {
+    if !is_capitalised_name(value) {
+        return false;
+    }
+    let Some(after) = expression.strip_prefix(value) else {
+        return false;
+    };
+    let after = after.trim_start();
+    after.is_empty() || after.starts_with('=')
+}
+
+/// Whether the text is a name that starts with a capital.
+///
+/// A name of a type holds letters, digits and underscores and starts with a
+/// capital, so `Token` and `Optional` are names of a type and `token` is no
+/// name of a type.
+fn is_capitalised_name(value: &str) -> bool {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !first.is_uppercase() {
+        return false;
+    }
+    characters.all(|character| character.is_alphanumeric() || character == '_')
+}
+
+/// Whether the value is a placeholder that names the secret in caps.
+///
+/// A template of a skill names the secret in caps, so `YOUR_KEY` and
+/// `YOUR_API_KEY` are placeholders and hold no secret.
+fn is_caps_placeholder(value: &str) -> bool {
+    value.starts_with("YOUR_") && !value.chars().any(|character| character.is_lowercase())
+}
+
+/// Whether the whole value of an assignment is a placeholder.
+///
+/// A placeholder is a value that shows where a secret goes, so the value
+/// itself is the placeholder and not a part of it: `<token>`, `${token}`,
+/// `{{token}}`, a run of `x` or of `*`, or one of the words `changeme`,
+/// `example`, `password`, `secret`, `your_password`, `your_key` and
+/// `your-api-key`.
+///
+/// A value that only holds a placeholder in the middle of it is no
+/// placeholder, so `abcchangeme123` is a secret. A value that holds a
+/// closed placeholder and more text after it is no placeholder either, so
+/// `<token>actual-secret<end>` is a secret.
+///
+/// The value is read as it is written, so the spaces of a value in quotes
+/// are part of the value: the value `" changeme "` is no placeholder.
+fn is_placeholder(value: &str) -> bool {
+    if placeholder_form(value, "<", ">") {
+        return true;
+    }
+    if placeholder_form(value, "${", "}") {
+        return true;
+    }
+    if placeholder_form(value, "{{", "}}") {
+        return true;
+    }
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|character| matches!(character, 'x' | 'X' | '*'))
+    {
+        return true;
+    }
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "changeme"
+            | "example"
+            | "password"
+            | "secret"
+            | "your_password"
+            | "your_key"
+            | "your-api-key"
+    )
+}
+
+/// Whether the whole value is a placeholder of a form.
+///
+/// The value starts with the opening delimiter of the form and the closing
+/// delimiter of the form comes at the end of the value, so the value holds
+/// nothing but the placeholder. A value that holds a closed placeholder
+/// and more text after it is no placeholder, so `<token>actual-secret` is
+/// no placeholder.
+fn placeholder_form(value: &str, open: &str, close: &str) -> bool {
+    let Some(rest) = value.strip_prefix(open) else {
+        return false;
+    };
+    match rest.find(close) {
+        Some(at) => at + close.len() == rest.len(),
+        None => false,
+    }
+}
+
+/// The assignments of a line.
+///
+/// An assignment holds the name of a key, the value of the key, the whole
+/// expression of the value and the sign that tells whether the value is in
+/// quotes, so a call, an expression and a type of Python are told apart
+/// from a value that holds a secret.
+struct Assignment {
+    /// The value of the key.
+    value: String,
+    /// The whole expression of the value.
+    expression: String,
+    /// Whether the value was in quotes.
+    quoted: bool,
+}
+
+/// The keys and the values of the assignments of a line.
+///
+/// A key is a word of letters, of digits, of dashes and of underscores, and
+/// the value of the key is the word that follows the colon or the equals
+/// sign of the key.
+///
+/// A key can be a word in quotes as well, so the key of a json file and the
+/// key of a yaml file are read as well: `"password": "..."` and
+/// `'api_key' = '...'` hold a key and a value.
+///
+/// The key and the value are read with their escapes decoded, so a key that
+/// hides its name behind an escape is the name itself: the key
+/// `"pass\u0077ord"` is the key `password` and the value `'ab''hunter2xx'`
+/// is the value `ab'hunter2xx`.
+///
+/// The whole expression of a value that is not in quotes is read as well,
+/// so a call and an assignment behind the value are told apart from a value
+/// that holds a secret.
+///
+/// Only the assignments whose key is wanted are read, so the value and the
+/// expression of the other keys are never read.
+fn assignments<F: Fn(&str) -> bool>(line: &str, wanted: F) -> Vec<Assignment> {
+    let bytes = line.as_bytes();
+    let mut found = Vec::new();
+    let mut index = 0;
+    // The brackets that the line holds and the place where the scan of the
+    // brackets stopped.
+    let mut stack: Vec<u8> = Vec::new();
+    let mut scanned = 0usize;
+    while index < bytes.len() {
+        let (key, key_end) = if bytes[index] == b'"' || bytes[index] == b'\'' {
+            // A key in quotes holds the word between the quotes.
+            let quote = bytes[index];
+            let Some(end) = end_of_quoted(bytes, index, quote) else {
+                // The quote is never closed, so the line holds no key.
+                index += 1;
+                continue;
+            };
+            // A word in quotes is only a key when the colon or the equals
+            // sign of an assignment follows it. A word in quotes that is no
+            // key is text of the line, so the scan goes on inside of it.
+            let mut follows = end;
+            while follows < bytes.len() && (bytes[follows] == b' ' || bytes[follows] == b'\t') {
+                follows += 1;
+            }
+            if follows >= bytes.len() || (bytes[follows] != b':' && bytes[follows] != b'=') {
+                index += 1;
+                continue;
+            }
+            (decode_quoted(&line[index + 1..end - 1], quote), end)
+        } else {
+            if !is_key_byte(bytes[index]) || (index > 0 && is_key_byte(bytes[index - 1])) {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < bytes.len() && is_key_byte(bytes[index]) {
+                index += 1;
+            }
+            (line[start..index].to_string(), index)
+        };
+        // The scan goes on behind the key, also when the key is no key of
+        // an assignment.
+        index = key_end;
+        let mut after = key_end;
+        while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
+            after += 1;
+        }
+        if after >= bytes.len() || (bytes[after] != b':' && bytes[after] != b'=') {
+            continue;
+        }
+        let mut value_start = after + 1;
+        while value_start < bytes.len()
+            && (bytes[value_start] == b' ' || bytes[value_start] == b'\t')
+        {
+            value_start += 1;
+        }
+        if !wanted(&key) {
+            // The key names no secret, so the value of the key is never
+            // read.
+            index = after + 1;
+            continue;
+        }
+        // A value in quotes is a text, so the bracket that holds the text
+        // holds no value of an assignment.
+        let in_quotes = value_start < bytes.len()
+            && (bytes[value_start] == b'"' || bytes[value_start] == b'\'');
+        // The bracket that holds the value of the assignment.
+        let enclosing = if in_quotes {
+            None
+        } else {
+            enclosing_bracket(line, value_start, &mut stack, &mut scanned)
+        };
+        let (value, value_end, quoted) = if in_quotes {
+            let quote = bytes[value_start];
+            match end_of_quoted(bytes, value_start, quote) {
+                // The value holds the text between the quotes.
+                Some(end) => (
+                    decode_quoted(&line[value_start + 1..end - 1], quote),
+                    end,
+                    true,
+                ),
+                // The quote is never closed, so the value is the rest of
+                // the line behind the quote.
+                None => (
+                    decode_quoted(&line[value_start + 1..], quote),
+                    bytes.len(),
+                    true,
+                ),
+            }
+        } else {
+            let mut end = value_start;
+            while end < bytes.len() && !bytes[end].is_ascii_whitespace() {
+                end += 1;
+            }
+            // The value ends at the delimiter that closes it, so the value
+            // of `{password: hunter2xyz, retries: 1}` holds no comma and
+            // the value of `{password: hunter2xyz}` holds no bracket.
+            let mut word = &line[value_start..end];
+            if word.ends_with(',') {
+                let at = value_start + word.len() - 1;
+                if starts_a_field(line, at + 1) {
+                    // A comma that starts the next field is no part of the
+                    // value.
+                    word = &word[..word.len() - 1];
+                }
+            }
+            if enclosing.is_some() {
+                // A bracket that closes the field of the value is no part
+                // of the value. The comma that ends the value is removed
+                // first, so the bracket behind the comma is found as well.
+                word = word.trim_end_matches(['}', ']', ')']);
+            }
+            (word.to_string(), end, false)
+        };
+        // The expression of a value goes on behind the value, so a call and
+        // an expression behind the value are told apart from a value that
+        // holds a secret. The expression of a value in quotes goes on
+        // behind the closing quote of the value, so a call behind a value
+        // in quotes holds no secret as well.
+        let expression = if quoted {
+            let mut expression = value.clone();
+            expression.push_str(rest_of_expression(line, value_end));
+            expression
+        } else {
+            // A value that is an argument of a call holds the call in its
+            // expression, so the expression of such a value ends behind
+            // the bracket that closes the call.
+            let call = enclosing == Some(b'(');
+            expression_of(line, value_start, call)
+        };
+        if !value.is_empty() {
+            found.push(Assignment {
+                value,
+                expression,
+                quoted,
+            });
+        }
+        index = after + 1;
+    }
+    found
+}
+
+/// The expression of a value that is not in quotes.
+///
+/// The expression of a value goes on behind the spaces of the value, so a
+/// call and an expression behind the value are told apart from a value that
+/// holds a secret: the expression of `password: get_secret (arg)` holds a
+/// call and the expression of `password: lookup = other` holds an
+/// assignment.
+///
+/// The expression ends at the end of the assignment, so the fields that
+/// follow the value and the brackets that hold the value are no part of
+/// it: the expression of `{password: hunter2xyz, retries: [1, 2]}` holds
+/// no call and no expression.
+fn expression_of(line: &str, value_start: usize, call: bool) -> String {
+    let end = end_of_expression(line, value_start, call, true);
+    line[value_start..end].trim_end().to_string()
+}
+
+/// The text behind a value in quotes that belongs to its expression.
+///
+/// The text ends at the end of the assignment, so the fields that follow
+/// the value and the brackets that hold the value are no part of it: the
+/// text behind the value of `{"password": "hunter2xx"}` is empty and the
+/// text behind the value of `password: "abcdef" + get_secret()` holds a
+/// call.
+fn rest_of_expression(line: &str, from: usize) -> &str {
+    let end = end_of_expression(line, from, false, false);
+    line[from..end].trim()
+}
+
+/// The end of the expression of a value.
+///
+/// The expression of a value goes on behind the value, so a call and an
+/// expression behind the value are told apart from a value that holds a
+/// secret.
+///
+/// The expression ends at the end of the assignment, so the fields that
+/// follow the value and the brackets that hold the value are no part of
+/// it: the expression of `{password: hunter2xyz, retries: [1, 2]}` ends
+/// behind the value and the expression of `{"password": "hunter2xx"}`
+/// ends behind the closing quote of the value.
+///
+/// A comment that starts behind a space ends the expression as well, so
+/// the text of a comment is no part of the expression.
+fn end_of_expression(line: &str, start: usize, call: bool, field: bool) -> usize {
+    let bytes = line.as_bytes();
+    let mut index = start;
+    // The brackets that the expression holds. A bracket that closes the
+    // field of the value is no bracket of the expression.
+    let mut depth = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                if depth == 0 {
+                    if call {
+                        // The bracket closes the call that holds the value,
+                        // so the expression ends behind it and the call is
+                        // no part of the expression.
+                        return index + 1;
+                    }
+                    // The bracket closes the field that holds the value,
+                    // so the expression ends in front of it.
+                    return index;
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 && !call && (!field || starts_a_field(line, index + 1)) => {
+                // The comma starts the next field, so the expression ends
+                // in front of it.
+                return index;
+            }
+            b'#' if line[..index]
+                .chars()
+                .last()
+                .is_some_and(|character| character.is_whitespace()) =>
+            {
+                // A `#` behind a space starts a comment, so the text
+                // behind it is no part of the expression.
+                return index;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+/// The bracket that holds the value of an assignment.
+///
+/// The scan reads the line until the value and holds the brackets that it
+/// passes, so the bracket that holds the value is the last bracket that is
+/// still open. A text in quotes holds no bracket, so the scan goes on
+/// behind it.
+///
+/// A bracket that opens a call holds the arguments of the call, so the
+/// value of `subTest(token=abcdef123456)` is an argument of a call. Every
+/// other bracket holds a field or a text, so the value of
+/// `{password: hunter2xyz}` is a field of a mapping.
+///
+/// The scan holds the place where it stopped, so every bracket of a line
+/// is read only once.
+fn enclosing_bracket(
+    line: &str,
+    value_start: usize,
+    stack: &mut Vec<u8>,
+    scanned: &mut usize,
+) -> Option<u8> {
+    let bytes = line.as_bytes();
+    while *scanned < value_start {
+        let index = *scanned;
+        match bytes[index] {
+            b'"' | b'\'' => {
+                // A text in quotes holds no bracket, so the scan goes on
+                // behind it.
+                match end_of_quoted(bytes, index, bytes[index]) {
+                    Some(end) => {
+                        // The text ends behind the value, so the scan goes
+                        // on behind the text.
+                        *scanned = end;
+                        continue;
+                    }
+                    None => {
+                        // The quote is never closed, so the rest of the
+                        // line is a text and holds no bracket.
+                        *scanned = bytes.len();
+                        break;
+                    }
+                }
+            }
+            b'(' | b'[' | b'{' => stack.push(bytes[index]),
+            b')' | b']' | b'}' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+        *scanned = index + 1;
+    }
+    stack.last().copied()
+}
+
+/// Whether a field of an assignment starts at the given place of a line.
+///
+/// A field holds a name and a value, so the name is a word of letters, of
+/// digits, of dashes and of underscores, or a word in quotes, and the name
+/// is followed by a colon or by an equals sign.
+///
+/// A mapping or a sequence starts the next field of a flow context as
+/// well, so the field behind the comma of
+/// `[{password: hunter2xyz}, {other: 1}]` starts a field.
+fn starts_a_field(line: &str, index: usize) -> bool {
+    let bytes = line.as_bytes();
+    let mut at = index;
+    while at < bytes.len() && (bytes[at] == b' ' || bytes[at] == b'\t') {
+        at += 1;
+    }
+    if at >= bytes.len() {
+        return false;
+    }
+    if bytes[at] == b'{' || bytes[at] == b'[' {
+        // A mapping or a sequence starts the next field.
+        return true;
+    }
+    let end = if bytes[at] == b'"' || bytes[at] == b'\'' {
+        // The name of the field is in quotes.
+        match end_of_quoted(bytes, at, bytes[at]) {
+            Some(end) => end,
+            None => return false,
+        }
+    } else {
+        let start = at;
+        while at < bytes.len() && is_key_byte(bytes[at]) {
+            at += 1;
+        }
+        if at == start {
+            return false;
+        }
+        at
+    };
+    let mut after = end;
+    while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
+        after += 1;
+    }
+    after < bytes.len() && (bytes[after] == b':' || bytes[after] == b'=')
+}
+
+/// The index after the closing quote of a quoted text.
+///
+/// The text starts at the opening quote. A backslash stands in front of the
+/// character that follows it, so the quote behind it does not close the
+/// text. Two single quotes in a row are an escaped quote of a single
+/// quoted text, so the text goes on behind them.
+///
+/// The function returns `None` when the text is never closed.
+fn end_of_quoted(bytes: &[u8], start: usize, quote: u8) -> Option<usize> {
+    let mut index = start + 1;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\\' {
+            // An escaped quote is text of the text, so the scan goes on
+            // behind the backslash and the character that it stands in
+            // front of.
+            index += 2;
+            continue;
+        }
+        if byte == quote {
+            if quote == b'\'' && bytes.get(index + 1) == Some(&b'\'') {
+                // Two quotes in a row are an escaped quote of a single
+                // quoted text, so the text goes on behind them.
+                index += 2;
+                continue;
+            }
+            return Some(index + 1);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// The text of a quoted text, with the escapes of the text decoded.
+///
+/// A text in double quotes is a text of json, so the escapes of json are
+/// decoded: the escape `\u0077` is the letter `w` and the escape `\"`
+/// is a quote. A text in single quotes is a text of yaml, so two quotes
+/// in a row are an escaped quote and the text holds one quote.
+///
+/// An escape that is not known is text of the text, so the backslash stays
+/// in front of it.
+fn decode_quoted(text: &str, quote: u8) -> String {
+    if quote == b'\'' {
+        // Two quotes in a row are an escaped quote of a single quoted
+        // text, so the text holds one quote.
+        return text.replace("''", "'");
+    }
+    decode_json(text)
+}
+
+/// The text of a json text, with the escapes of json decoded.
+///
+/// The escape `\"` is a quote, the escape `\\` is a backslash, the escape
+/// `\/` is a slash, the escapes `\b`, `\f`, `\n`, `\r` and `\t` are the
+/// characters that they stand for and the escape `\uXXXX` is the character
+/// of the four digits.
+///
+/// A character outside of the basic plane stands for two escapes, so the
+/// two escapes are read as one character.
+///
+/// An escape that is not known is text of the text, so the backslash stays
+/// in front of it.
+fn decode_json(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        let mut characters = rest.chars();
+        let Some(escape) = characters.next() else {
+            // A backslash at the end of the text is text of the text.
+            out.push('\\');
+            break;
+        };
+        rest = characters.as_str();
+        match escape {
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            '/' => out.push('/'),
+            'b' => out.push('\u{8}'),
+            'f' => out.push('\u{c}'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            'u' => {
+                let Some((code, after)) = json_escape(rest) else {
+                    // The escape is broken, so the text of the escape stays
+                    // as it is.
+                    out.push_str("\\u");
+                    continue;
+                };
+                rest = after;
+                let code = if (0xd800..0xdc00).contains(&code)
+                    && let Some((second, after)) = rest.strip_prefix("\\u").and_then(json_escape)
+                    && (0xdc00..0xe000).contains(&second)
+                {
+                    // The two escapes stand for one character outside of
+                    // the basic plane.
+                    rest = after;
+                    0x10000 + ((code - 0xd800) << 10) + (second - 0xdc00)
+                } else {
+                    code
+                };
+                match char::from_u32(code) {
+                    Some(character) => out.push(character),
+                    None => {
+                        // The escape is broken, so the text of the escape
+                        // stays as it is.
+                        out.push_str("\\u");
+                    }
+                }
+            }
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The number of an escape of json and the text behind it.
+///
+/// The escape holds four hexadecimal digits, so a shorter or a longer
+/// number is no escape at all.
+fn json_escape(text: &str) -> Option<(u32, &str)> {
+    let mut digits = String::new();
+    let mut rest = text;
+    for _ in 0..4 {
+        let character = rest.chars().next()?;
+        if !character.is_ascii_hexdigit() {
+            return None;
+        }
+        digits.push(character);
+        rest = &rest[character.len_utf8()..];
+    }
+    let value = u32::from_str_radix(&digits, 16).ok()?;
+    Some((value, rest))
+}
+
+/// Whether a byte can be a part of the key of an assignment.
+fn is_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
 
 fn has_private_key(line: &str) -> bool {
@@ -2692,6 +4245,514 @@ mod tests {
                 "subprocess".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn python_imports_read_an_import_behind_a_colon() {
+        let imports = python_imports(concat!(
+            "if True: import subprocess\n",
+            "try: import socket\n",
+            "else: from shutil import copy\n",
+        ));
+
+        assert_eq!(
+            imports,
+            vec![
+                "shutil".to_string(),
+                "socket".to_string(),
+                "subprocess".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn python_imports_read_an_import_of_a_call() {
+        let imports = python_imports(concat!(
+            "module = __import__(\"socket\")\n",
+            "other = importlib.import_module('subprocess')\n",
+        ));
+
+        assert_eq!(
+            imports,
+            vec!["socket".to_string(), "subprocess".to_string()]
+        );
+    }
+
+    #[test]
+    fn python_imports_read_a_call_with_a_prefix() {
+        // A literal of python can hold a prefix, so the name of the module
+        // is read with the prefix.
+        let cases = [
+            "module = __import__(r\"socket\")\n",
+            "module = __import__(R'socket')\n",
+            "module = __import__(u\"socket\")\n",
+            "module = __import__(b\"socket\")\n",
+            "module = __import__(br\"socket\")\n",
+            "module = __import__(rb\"socket\")\n",
+            "module = __import__(Rb\"socket\")\n",
+            "module = importlib.import_module(r\"socket\")\n",
+        ];
+        for text in cases {
+            let imports = python_imports(text);
+            assert_eq!(imports, vec!["socket".to_string()], "{text}");
+        }
+    }
+
+    #[test]
+    fn python_imports_read_a_call_with_an_escape() {
+        // The escape of the literal is decoded, so the name of the module
+        // is the name that the literal holds.
+        let imports = python_imports("module = __import__(\"sock\\x65t\")\n");
+        assert_eq!(imports, vec!["socket".to_string()]);
+
+        let imports = python_imports("module = __import__(\"sub\\u0070rocess\")\n");
+        assert_eq!(imports, vec!["subprocess".to_string()]);
+    }
+
+    #[test]
+    fn python_imports_read_a_call_with_an_octal_escape() {
+        // An escape of one to three octal digits is an escape of python as
+        // well, so the name of the module is the name that the literal
+        // holds.
+        let imports = python_imports("module = __import__(\"\\163ocket\")\n");
+        assert_eq!(imports, vec!["socket".to_string()]);
+
+        let imports = python_imports("module = __import__(\"\\160rocess\")\n");
+        assert_eq!(imports, vec!["process".to_string()]);
+
+        // An escape of one digit is an escape as well, so the name of the
+        // module holds the character of the escape and is no name at all.
+        let imports = python_imports("module = __import__(\"\\7ocket\")\n");
+        assert!(imports.is_empty(), "{imports:?}");
+    }
+
+    #[test]
+    fn python_imports_leave_an_f_string_of_a_call_out() {
+        // An f-string is no literal, so the name of the module is not a
+        // name that the scan can read.
+        let imports = python_imports("module = __import__(f\"socket\")\n");
+        assert!(imports.is_empty(), "{imports:?}");
+    }
+
+    #[test]
+    fn python_imports_leave_a_call_of_a_string_out() {
+        let imports = python_imports("text = \"__import__(\'socket\')\"\n");
+
+        assert!(imports.is_empty(), "{imports:?}");
+    }
+
+    #[test]
+    fn an_import_in_an_f_string_is_an_import() {
+        // The expression of an f-string is code, so the call of the loader
+        // runs when the string is built.
+        let imports = python_imports("value = f\"{__import__('socket')}\"\n");
+        assert_eq!(imports, vec!["socket".to_string()]);
+
+        let imports = python_imports("value = f\"{__import__(\"socket\")}\"\n");
+        assert_eq!(imports, vec!["socket".to_string()]);
+    }
+
+    #[test]
+    fn a_text_with_a_character_that_cannot_be_printed_is_reported() {
+        // The tokenizer of the interpreter refuses a text that holds a null
+        // byte or another character that cannot be printed.
+        assert!(!python_parses("x = 1\u{0}\n"));
+        assert!(!python_parses("x = 1\u{7}\n"));
+        assert!(!python_parses("x = 1\u{7f}\n"));
+        assert!(python_parses("x = 1\n"));
+        assert!(python_parses("x = 1\t\n"));
+    }
+
+    #[test]
+    fn an_f_string_with_a_single_brace_is_reported() {
+        // The interpreter refuses an f-string that holds a single brace.
+        assert!(!python_parses("value = f\"}\"\n"));
+        assert!(python_parses("value = f\"{{}}\"\n"));
+    }
+
+    #[test]
+    fn a_string_that_runs_over_a_line_is_reported() {
+        // A string that is not a string of three quotes cannot run over a
+        // newline, so the text cannot be tokenised.
+        assert!(!python_parses("value = \"abc\nimport subprocess\ndef\"\n"));
+        // A string of three quotes can run over a newline.
+        assert!(python_parses("value = \"\"\"abc\ndef\"\"\"\n"));
+        // A backslash in a string goes on with the line that comes now.
+        assert!(python_parses("value = \"abc\\\ndef\"\n"));
+    }
+
+    #[test]
+    fn a_backslash_with_spaces_after_it_is_reported() {
+        // Nothing but the end of the line may follow a backslash.
+        assert!(!python_parses("value = 1 + \\   \n    2\n"));
+        assert!(!python_parses("value = 1 + \\\t\n    2\n"));
+        assert!(python_parses("value = 1 + \\\n    2\n"));
+        assert!(python_parses("value = 1 + \\\r\n    2\r\n"));
+    }
+
+    #[test]
+    fn a_format_of_an_f_string_is_no_code() {
+        // The format of the value is text of the string, so a hash in the
+        // format is no comment.
+        assert!(python_parses("value = f\"{value:#x}\"\n"));
+        assert!(python_parses("value = f\"{value!r}\"\n"));
+        assert!(python_parses("value = f\"{value:>10}\"\n"));
+    }
+
+    #[test]
+    fn an_import_after_a_backslash_in_an_f_string_is_an_import() {
+        // The backslash is text of the string, so the brace still opens the
+        // expression.
+        let imports = python_imports("value = rf\"\\{__import__('socket')}\"\n");
+        assert_eq!(imports, vec!["socket".to_string()]);
+
+        let imports = python_imports("value = f\"\\{__import__('socket')}\"\n");
+        assert_eq!(imports, vec!["socket".to_string()]);
+    }
+
+    #[test]
+    fn a_text_that_the_interpreter_refuses_is_reported() {
+        // A line that goes on with a line that never comes.
+        assert!(!python_parses("x = 1 \\\n"));
+        assert!(python_parses("x = 1 \\\n\n"));
+        // A line that is indented deeper than the line before it.
+        assert!(!python_parses("x = 1\n    y = 2\n"));
+        // A line that is indented less than any level around it.
+        assert!(!python_parses("def f():\n    x = 1\n  y = 2\n"));
+        // The first line of a text starts at the left margin.
+        assert!(!python_parses("  x = 1\n"));
+        // A text that the interpreter reads.
+        assert!(python_parses("x = 1 + \\\n    2\n"));
+        assert!(python_parses("def f():\n    return 1\n"));
+        assert!(python_parses("value = f\"{x}\"\n"));
+        // A header of a block that goes on with the next line.
+        assert!(python_parses("def f(\n    a,\n):\n    return 1\n"));
+        // A string that goes on with the next line.
+        assert!(python_parses("text = \"\"\"\nhello\n\"\"\"\nvalue = 1\n"));
+        // A line that ends with a backslash and a carriage return.
+        assert!(python_parses("value = 1 + \\\r\n    2\r\n"));
+        // A line that holds nothing but spaces.
+        assert!(python_parses("def f():\n    \n    return 1\n"));
+        // A text that ends its lines with a carriage return.
+        assert!(python_parses("if x:\r\n    pass\r\n"));
+    }
+
+    #[test]
+    fn a_bracket_that_closes_another_bracket_is_reported() {
+        // The interpreter refuses a bracket that closes another bracket.
+        assert!(!python_parses("x = ([)]\n"));
+        assert!(!python_parses("x = (1, 2]\n"));
+        assert!(!python_parses("x = [1, 2)\n"));
+        assert!(!python_parses("x = {1: 2]\n"));
+        assert!(!python_parses("x = ([{)]}\n"));
+        // The interpreter refuses a bracket that is never closed.
+        assert!(!python_parses("x = (1, 2\n"));
+        assert!(!python_parses("x = [1, 2\n"));
+        assert!(!python_parses("x = {1: 2\n"));
+        // The brackets of the interpreter fit together.
+        assert!(python_parses("x = (1, 2)\n"));
+        assert!(python_parses("x = [1, 2]\n"));
+        assert!(python_parses("x = {1: 2}\n"));
+        assert!(python_parses("x = ([1], {2: 3})\n"));
+    }
+
+    #[test]
+    fn a_text_that_cannot_be_tokenised_is_reported() {
+        assert!(!python_parses("value = \"unterminated\n"));
+        assert!(!python_parses("value = (1, 2\n"));
+        assert!(python_parses("value = \"closed\"\n"));
+        assert!(python_parses("value = (1, 2)\n"));
+    }
+
+    #[test]
+    fn a_key_and_a_value_that_look_like_a_secret_are_a_secret() {
+        assert!(line_has_secret("password: hunter2xx"));
+        assert!(line_has_secret("api_key = \"abcdef123456\""));
+        assert!(line_has_secret("description: \"Demo password: hunter2xx\""));
+        assert!(line_has_secret("client_secret=abcdef123456"));
+    }
+
+    #[test]
+    fn a_key_that_holds_the_name_of_a_secret_in_a_longer_word_is_no_secret() {
+        // The name of the secret has to be a whole word of the key, so a
+        // key that holds the name in the middle of a longer word names no
+        // secret.
+        assert!(!line_has_secret("max_tokens:4096"));
+        assert!(!line_has_secret("max_tokens: 409600"));
+        assert!(!line_has_secret("query_tokens = ..."));
+        assert!(!line_has_secret("query_tokens = 123456"));
+        assert!(!line_has_secret("tokenizer = abcdef123456"));
+        assert!(!line_has_secret("mypassword = abcdef123456"));
+        // The text of the line is no secret either, so it is not redacted.
+        assert_eq!(redact("max_tokens:4096"), "max_tokens:4096");
+        assert_eq!(redact("query_tokens = ..."), "query_tokens = ...");
+        assert_eq!(redact("query_tokens = 123456"), "query_tokens = 123456");
+        assert_eq!(
+            redact("tokenizer = abcdef123456"),
+            "tokenizer = abcdef123456"
+        );
+    }
+
+    #[test]
+    fn a_key_that_names_a_secret_as_a_word_of_its_own_is_a_secret() {
+        // The name of the secret may be the whole key or the last part of
+        // a key of parts.
+        assert!(line_has_secret("token: hunter2xyz"));
+        assert!(line_has_secret("api_key = \"sk_live_...\""));
+        assert!(line_has_secret("API_KEY = \"sk_live_...\""));
+        assert!(line_has_secret("x-api-key: hunter2xyz"));
+        assert!(line_has_secret("client_secret=abcdef123456"));
+        assert!(line_has_secret("POSTGRES_PASSWORD: postgres123"));
+    }
+
+    #[test]
+    fn a_value_that_holds_no_secret_is_no_secret() {
+        // A variable of the shell and a variable of the environment hold
+        // no secret.
+        assert!(!line_has_secret("\"x-api-key\": $key"));
+        assert!(!line_has_secret("api_key: $API_KEY_VALUE"));
+        assert!(!line_has_secret("api_key: %API_KEY_VALUE%"));
+        // A call and an expression hold no secret.
+        assert!(!line_has_secret("subTest(token=x)"));
+        assert!(!line_has_secret("subTest(token=abcdef123456)"));
+        assert!(!line_has_secret("api_key = os.environ[\"API_KEY\"]"));
+        // A value that holds a bracket holds a call or an expression as
+        // well.
+        assert!(!line_has_secret("password: value("));
+        assert!(!line_has_secret("password: value)"));
+        assert!(!line_has_secret("password: value["));
+        assert!(!line_has_secret("password: value]"));
+        assert!(!line_has_secret("password: value{"));
+        assert!(!line_has_secret("password: value}"));
+        assert!(!line_has_secret("password: value = other"));
+        // A type of Python holds no secret.
+        assert!(!line_has_secret("token: Token = []"));
+        assert!(!line_has_secret("token: Token"));
+        assert!(!line_has_secret("token: Tokens"));
+        // A placeholder in caps holds no secret.
+        assert!(!line_has_secret("x-api-key: YOUR_KEY"));
+        assert!(!line_has_secret("x-api-key: YOUR_API_KEY"));
+        // A short value holds no secret.
+        assert!(!line_has_secret("api_key: short"));
+        // The text of the line is no secret either, so it is not redacted.
+        assert_eq!(redact("\"x-api-key\": $key"), "\"x-api-key\": $key");
+        assert_eq!(redact("token: Token = []"), "token: Token = []");
+        assert_eq!(redact("x-api-key: YOUR_KEY"), "x-api-key: YOUR_KEY");
+        assert_eq!(redact("subTest(token=x)"), "subTest(token=x)");
+    }
+
+    #[test]
+    fn a_key_and_a_value_that_hold_a_secret_are_a_secret() {
+        // The key names a secret and the value holds one, so the line is a
+        // finding and the text of the line is redacted.
+        for line in [
+            "password: hunter2xyz",
+            "\"password\": \"hunter2xyz\"",
+            "api_key = \"sk_live_...\"",
+            "POSTGRES_PASSWORD: postgres123",
+        ] {
+            assert!(line_has_secret(line), "{line}");
+            assert_eq!(redact(line), REDACTED, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_placeholder_is_no_secret() {
+        // The whole value is a placeholder, so the value is no secret.
+        assert!(!line_has_secret("password: <your-password>"));
+        assert!(!line_has_secret("password: ${PASSWORD}"));
+        assert!(!line_has_secret("password: {{ password }}"));
+        assert!(!line_has_secret("password: xxxxxxxx"));
+        assert!(!line_has_secret("password: XXXXXXXX"));
+        assert!(!line_has_secret("password: ********"));
+        assert!(!line_has_secret("password: changeme"));
+        assert!(!line_has_secret("password: example"));
+        assert!(!line_has_secret("password: password"));
+        assert!(!line_has_secret("password: secret"));
+        assert!(!line_has_secret("password: your_password"));
+        assert!(!line_has_secret("password: your-api-key"));
+        // The words of a placeholder are placeholders in any case.
+        assert!(!line_has_secret("password: CHANGEME"));
+        assert!(!line_has_secret("password: Example"));
+        assert!(!line_has_secret("password: Your-API-Key"));
+        assert!(!line_has_secret("password: short"));
+    }
+
+    #[test]
+    fn a_value_that_only_holds_a_placeholder_is_a_secret() {
+        // A placeholder is a placeholder when the whole value is it, so a
+        // value that holds a placeholder in the middle of it is a secret.
+        assert!(line_has_secret("password: abcchangeme123"));
+        assert!(line_has_secret("password: example-password"));
+        assert!(line_has_secret("password: your_password_here"));
+        assert!(line_has_secret("password: xxxxxxxxxxabc"));
+    }
+
+    #[test]
+    fn a_value_that_holds_a_closed_placeholder_and_a_secret_is_a_secret() {
+        // A placeholder is a placeholder when the whole value is it, so a
+        // value that holds a closed placeholder and more text after it is
+        // a secret.
+        assert!(line_has_secret("password: <token>actual-secret<end>"));
+        assert!(line_has_secret(
+            "{\"password\": \"<token>actual-secret<end>\"}"
+        ));
+        // A value that names a shell variable holds no secret, and a value
+        // that holds a brace holds an expression, so no secret is in it.
+        assert!(!line_has_secret("password: ${token}actual-secret"));
+        assert!(!line_has_secret("password: {{token}}actual-secret"));
+        // The whole value is a placeholder, so the value is no secret.
+        assert!(!line_has_secret("password: <token>"));
+        assert!(!line_has_secret("password: ${token}"));
+        assert!(!line_has_secret("password: {{token}}"));
+    }
+
+    #[test]
+    fn a_value_in_quotes_is_no_type_of_python() {
+        // A value in quotes is a text and no type of Python, so the value
+        // holds a secret and the text of the line is redacted.
+        assert!(line_has_secret("password: \"Hunter2xyz\""));
+        assert!(line_has_secret("\"password\": \"Hunter2xyz\""));
+        assert_eq!(redact("password: \"Hunter2xyz\""), REDACTED);
+        // A value that is not in quotes and that names a type holds no
+        // secret.
+        assert!(!line_has_secret("password: Hunter2xyz"));
+        assert!(!line_has_secret("token: Token = []"));
+        assert!(!line_has_secret("token: Token"));
+    }
+
+    #[test]
+    fn a_value_in_a_field_of_a_mapping_is_a_secret() {
+        // The expression of a value ends at the end of its assignment, so
+        // the fields that follow the value and the brackets that hold the
+        // value are no part of the expression and the value holds a
+        // secret.
+        assert!(line_has_secret("{password: hunter2xyz, retries: [1, 2]}"));
+        assert!(line_has_secret("{password: hunter2xyz}"));
+        assert!(line_has_secret(
+            "{\"password\": \"hunter2xx\", \"other\": 1}"
+        ));
+        // The text of the line is redacted, so the value never reaches the
+        // output.
+        assert_eq!(redact("{password: hunter2xyz, retries: [1, 2]}"), REDACTED);
+    }
+
+    #[test]
+    fn a_value_in_a_nested_mapping_is_a_secret() {
+        // The bracket that closes the mapping of the value and the field
+        // that follows it are no part of the value, so the value holds a
+        // secret.
+        assert!(line_has_secret(
+            "{config: {password: hunter2xyz}, retries: 1}"
+        ));
+        assert!(line_has_secret(
+            "{config: {password: hunter2xyz}, retries: [1, 2]}"
+        ));
+        // A sequence of mappings holds the value as well.
+        assert!(line_has_secret("[{password: hunter2xyz}, {other: 1}]"));
+        assert!(line_has_secret("[{password: hunter2xyz}]"));
+        // The text of the line is redacted, so the value never reaches the
+        // output.
+        assert_eq!(
+            redact("{config: {password: hunter2xyz}, retries: [1, 2]}"),
+            REDACTED
+        );
+        assert_eq!(redact("[{password: hunter2xyz}, {other: 1}]"), REDACTED);
+    }
+
+    #[test]
+    fn a_call_behind_a_value_in_quotes_holds_no_secret() {
+        // The expression of a value in quotes goes on behind the closing
+        // quote of the value, so a call behind the value holds no secret.
+        assert!(!line_has_secret("password: \"abcdef\" + get_secret()"));
+        assert!(!line_has_secret("password: \"hunter2xx\" + get_secret()"));
+        // The text of the line is no secret either, so it is not redacted.
+        assert_eq!(
+            redact("password: \"abcdef\" + get_secret()"),
+            "password: \"abcdef\" + get_secret()"
+        );
+    }
+
+    #[test]
+    fn an_expression_behind_a_value_holds_no_secret() {
+        // The whole expression of the value is read, so a call and an
+        // assignment behind the value hold no secret.
+        assert!(!line_has_secret("password: get_secret (arg)"));
+        assert!(!line_has_secret("password: lookup = other"));
+        assert!(!line_has_secret("api_key: os.environ[\"API_KEY\"]"));
+        // The text of the line is no secret either, so it is not redacted.
+        assert_eq!(
+            redact("password: get_secret (arg)"),
+            "password: get_secret (arg)"
+        );
+        assert_eq!(
+            redact("password: lookup = other"),
+            "password: lookup = other"
+        );
+        // A value that holds a secret is a secret all the same.
+        assert!(line_has_secret("password: hunter2xyz"));
+    }
+
+    #[test]
+    fn a_variable_of_the_shell_holds_no_secret_with_a_text_behind_it() {
+        // A value that names a shell variable holds no secret, and a value
+        // that holds a brace holds an expression, so the text behind the
+        // variable holds no secret.
+        assert!(!line_has_secret("password: ${TOKEN}suffix"));
+        assert!(!line_has_secret("password: %TOKEN%suffix"));
+        assert_eq!(
+            redact("password: ${TOKEN}suffix"),
+            "password: ${TOKEN}suffix"
+        );
+    }
+
+    #[test]
+    fn a_key_in_quotes_and_a_value_are_a_secret() {
+        // The key of a json file and the key of a yaml file are keys as
+        // well, so the value of such a key is a secret.
+        assert!(line_has_secret("{\"password\": \"hunter2xx\"}"));
+        assert!(line_has_secret("'api_key' = 'abcdef123456'"));
+        assert!(line_has_secret("\"token\": \"abcdef123456\""));
+        assert!(line_has_secret("password: \"hunter2xx\""));
+        assert!(!line_has_secret("{\"password\": \"short\"}"));
+    }
+
+    #[test]
+    fn a_value_with_an_escaped_quote_is_a_secret() {
+        // An escaped quote is text of the value, so the value goes on
+        // behind it and the value is a secret.
+        assert!(line_has_secret("{\"password\":\"ab\\\"hunter2xx\"}"));
+        assert!(line_has_secret("password: \"ab\\\"hunter2xx\""));
+    }
+
+    #[test]
+    fn a_value_with_an_escaped_quote_of_yaml_is_a_secret() {
+        // Two quotes in a row are an escaped quote of a yaml text, so the
+        // value goes on behind them and the value is a secret.
+        assert!(line_has_secret("password: 'ab''hunter2xx'"));
+        assert!(line_has_secret("'api_key': 'ab''hunter2xx'"));
+        // A quote that ends the value ends it, so the text behind it is no
+        // part of the value.
+        assert!(!line_has_secret("password: 'ab'"));
+    }
+
+    #[test]
+    fn a_key_with_an_escaped_letter_is_a_secret() {
+        // The escape of a key of json is decoded, so the key hides its name
+        // behind the escape and the value of the key is a secret.
+        assert!(line_has_secret("{\"pass\\u0077ord\": \"hunter2xx\"}"));
+        assert!(line_has_secret("{\"api\\u005fkey\": \"hunter2xx\"}"));
+    }
+
+    #[test]
+    fn a_value_with_spaces_around_it_is_no_placeholder() {
+        // The spaces of a value in quotes are part of the value, so the
+        // value is no placeholder and so it is a secret.
+        assert!(line_has_secret("password: \" changeme \""));
+        assert!(line_has_secret("{\"password\": \" changeme \"}"));
+        // The whole value is a placeholder, so the value is no secret.
+        assert!(!line_has_secret("password: changeme"));
+        assert!(!line_has_secret("{\"password\": \"changeme\"}"));
     }
 
     #[test]

@@ -36,9 +36,11 @@ use std::sync::LazyLock;
 
 /// The largest file that the risk rules read.
 ///
-/// A file that is bigger than this is left to the other findings of the
-/// store, so a big file never slows the add of a skill down.
-pub const MAX_SCAN_BYTES: u64 = 3 * 1024 * 1024;
+/// The limit is 16 MB. A file that is bigger than this is left to the other
+/// findings of the store, so a big file never slows the add of a skill
+/// down. A file that is not read is a finding of its own, because a file
+/// that is not scanned can hold anything.
+pub const MAX_SCAN_BYTES: u64 = 16 * 1000 * 1000;
 
 /// The modules of the CPython standard library of CPython 3.14.
 ///
@@ -662,6 +664,7 @@ pub fn scan_text(path: &str, text: &str) -> Vec<Finding> {
             severity: rule.severity,
             path: path.to_string(),
             line: Some(line_of(text, offset)),
+            detail: None,
         });
     }
     findings
@@ -871,6 +874,25 @@ pub fn calls_open(text: &str) -> bool {
     OPEN_CALL.is_match(text)
 }
 
+/// Whether a name is the name of a module of the standard library.
+///
+/// The list is the list of the modules of the CPython standard library, so a
+/// file or a folder of that name of a skill hides the module of the
+/// standard library.
+pub fn is_stdlib_module(name: &str) -> bool {
+    STDLIB_MODULES.contains(&name)
+}
+
+/// Whether a name of a skill hides a module of the interpreter.
+///
+/// A name hides a module when it is the name of a module of the standard
+/// library or the name of a module that reaches outside of the process: the
+/// interpreter runs the file of the skill where it would run the module of
+/// the interpreter.
+pub fn hides_module(name: &str) -> bool {
+    is_stdlib_module(name) || RISKY_MODULES.contains(&name)
+}
+
 /// The module that a name of a skill hides.
 ///
 /// A python file of the name of a module that reaches outside of the
@@ -882,6 +904,27 @@ pub fn calls_open(text: &str) -> bool {
 pub fn hidden_module(name: &str) -> Option<&'static str> {
     let stem = name.strip_suffix(".py").unwrap_or(name);
     RISKY_MODULES.iter().copied().find(|module| *module == stem)
+}
+
+/// The module of the standard library that a name of a skill hides.
+///
+/// The name of a python file loses its extension, so the file `socket.py`
+/// hides the module `socket`. A folder hides the module of its name as
+/// well.
+///
+/// A name that is not the name of a module of the standard library hides
+/// nothing, so the function returns `None`.
+pub fn hidden_stdlib_module(name: &str) -> Option<&'static str> {
+    let stem = name.strip_suffix(".py").unwrap_or(name);
+    if !hides_module(stem) {
+        return None;
+    }
+    hidden_module(stem).or_else(|| {
+        STDLIB_MODULES
+            .iter()
+            .copied()
+            .find(|module| *module == stem)
+    })
 }
 
 /// The line of a text at an offset.

@@ -1017,7 +1017,7 @@ fn print_usage() {
   skrun catalog search <dir> <query>... [--kind folder|flat] [--has-scripts] [--limit N] [--json]
   skrun catalog add <source> [--store <dir>] [--id <id>] [--from <provenance>] [--json]
   skrun catalog inspect <id> [--store <dir>] [--json]
-  skrun catalog inspect --list [--store <dir>]
+  skrun catalog inspect --list [--store <dir>] [--json]
 "#
     );
 }
