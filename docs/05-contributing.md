@@ -48,4 +48,4 @@ A new kind touches every `match` on `ArtifactKind` in `runtime.rs`: `validate`, 
 
 The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must Not`, `Inputs`, `Outputs`, `Depends On`, `Verify`). Update it when you move responsibility, and respect the `Must Not` lists: the runtime does not plan, parse `@skill` mentions, render UI or hold durable state. New operations belong in `runtime.rs` first and are then exposed through `main.rs` and `crates/py/src/lib.rs`, never implemented in Python.
 
-<sub>Sources: [runtime.rs:55-61](../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:376-405](../crates/skrun/src/main.rs#L376-L405) · [runtime.rs:3-17](../crates/skrun/src/runtime.rs#L3-L17)</sub>
+<sub>Sources: [runtime.rs:55-61](../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:544-573](../crates/skrun/src/main.rs#L544-L573) · [runtime.rs:3-17](../crates/skrun/src/runtime.rs#L3-L17)</sub>

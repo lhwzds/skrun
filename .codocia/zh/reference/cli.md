@@ -1,9 +1,9 @@
 ---
 title: CLI 命令与参数
-source: #d836b5756a08
+source: #589871180fa2
 ---
 
-所有命令都在 `skrun skill` 下。位置参数 `<dir>` / `<id>` 可以出现在参数之间的任意位置。
+skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 `<dir>` / `<id>` 可以出现在参数之间的任意位置。
 
 | 命令 | 参数（默认值） |
 |---|---|

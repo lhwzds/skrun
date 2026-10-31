@@ -2,7 +2,7 @@
 title: Install it and call it from Python
 order: 30
 evidence:
-  - crates/skrun/src/main.rs:82-107 #c40fb7ef3ded
+  - crates/skrun/src/main.rs:84-109 #c40fb7ef3ded
   - python/skrun/skill.py:236-240 #ad1c8847cbc7
 ---
 

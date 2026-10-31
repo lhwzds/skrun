@@ -36,7 +36,7 @@ skrun 是一个面向 *skill* 的小型本地运行时。skill 就是一个目�
 
 ### 一个运行时，三个入口
 
-所有行为都在一个 Rust 模块 `crates/skrun/src/runtime.rs` 中。`skrun` crate 既把它作为库重新导出，也附带 `skrun` CLI 二进制。Python 通过 `skrun-native`（`crates/py`）调用同一份代码，这是一个 PyO3 扩展，由 maturin 安装为 `skrun.skrun_native`；纯 Python 的 `skrun` 包只负责转换参数和 JSON。
+skill 的行为都在一个 Rust 模块 `crates/skrun/src/runtime.rs` 中；另一个模块 `catalog` 只负责指导性 skill 目录的记账工作（[参考](#reference)）。`skrun` crate 既把运行时作为库重新导出，也附带 `skrun` CLI 二进制。Python 通过 `skrun-native`（`crates/py`）调用同一份代码，这是一个 PyO3 扩展，由 maturin 安装为 `skrun.skrun_native`；纯 Python 的 `skrun` 包只负责转换参数和 JSON。
 
 ```mermaid
 flowchart LR
@@ -48,7 +48,7 @@ flowchart LR
 
 由于 Python 包没有子进程后备方案，通过 Python 调用和通过 CLI 调用时，skill 的校验和执行方式完全相同。
 
-<sub>来源: [lib.rs:1-13](../../crates/skrun/src/lib.rs#L1-L13) · [lib.rs:103-129](../../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../../pyproject.toml#L38-L44)</sub>
+<sub>来源: [lib.rs:1-14](../../crates/skrun/src/lib.rs#L1-L14) · [lib.rs:103-129](../../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../../pyproject.toml#L38-L44)</sub>
 
 ### 为什么工作区这么小
 
@@ -82,16 +82,16 @@ cargo install --path crates/skrun # 或者：从本地检出的代码安装 CLI
 skrun skill new --kind rust_binary --id rust-echo /tmp/rust-echo
 skrun skill build /tmp/rust-echo
 skrun skill run --input '{"ok":true}' /tmp/rust-echo
-## {
-##   "ok": true
-## }
+# {
+#   "ok": true
+# }
 ```
 
 `new` 会生成一个独立的 Cargo 项目（`Cargo.toml` 中带一个空的 `[workspace]`，`src/main.rs` 原样回显 stdin）、不做限制的 `schema/input.json` 和 `schema/output.json`、一个 `SKILL.md`，以及 `entry: bin/release/rust-echo` 的 `artifact.json`。`build` 运行 Cargo，并把二进制复制到这个 `entry` 路径。`run` 把输入通过管道传给二进制，并格式化输出它返回的 JSON 对象。
 
 Python 则使用 `--kind python_uv`：脚手架是一个 `pyproject.toml` 加一个回显输入的 `skill.py`，`build` 会运行 `uv lock`/`uv sync`。
 
-<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:73-81](../../crates/skrun/src/main.rs#L73-L81)</sub>
+<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:75-83](../../crates/skrun/src/main.rs#L75-L83)</sub>
 
 ### 安装 skill 并从 Python 调用
 
@@ -112,7 +112,7 @@ skrun.skill("/tmp/rust-echo").call({"ok": True})   # 或者按路径
 
 如果参数对应的目录中包含 `artifact.json` 或 `SKILL.md`，`skrun.skill` 就把它当作路径，否则当作 skill 根目录下的 id。由于安装是复制，重新构建 skill 后要用 `--overwrite` 重新安装（[工作原理](#how-it-works)）。
 
-<sub>来源: [main.rs:82-107](../../crates/skrun/src/main.rs#L82-L107) · [skill.py:236-240](../../python/skrun/skill.py#L236-L240)</sub>
+<sub>来源: [main.rs:84-109](../../crates/skrun/src/main.rs#L84-L109) · [skill.py:236-240](../../python/skrun/skill.py#L236-L240)</sub>
 
 ### 试一个真实示例
 
@@ -150,11 +150,11 @@ def regex_finder_tool(pattern: str, text: str) -> dict:
 
 CLI、环境变量、文件格式和 Python API 的准确名称，均摘自代码。`skrun`、`skrun -h`、`skrun --help` 和 `skrun help` 都会打印用法说明。
 
-<sub>来源: [main.rs:438-450](../../crates/skrun/src/main.rs#L438-L450)</sub>
+<sub>来源: [main.rs:248-251](../../crates/skrun/src/main.rs#L248-L251) · [main.rs:606-621](../../crates/skrun/src/main.rs#L606-L621)</sub>
 
 ### CLI 命令与参数
 
-所有命令都在 `skrun skill` 下。位置参数 `<dir>` / `<id>` 可以出现在参数之间的任意位置。
+skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 `<dir>` / `<id>` 可以出现在参数之间的任意位置。
 
 | 命令 | 参数（默认值） |
 |---|---|
@@ -167,7 +167,21 @@ CLI、环境变量、文件格式和 Python API 的准确名称，均摘自代�
 
 `--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 的文本输出是以制表符分隔的 `id kind version name`。给 `run` 同时传目录和 `--id` 会报错。`--cargo` 和 `--uv` 存在，但没有写进用法说明。出错时会向 stderr 打印 `Error: ...` 并以 1 退出。
 
-<sub>来源: [main.rs:44-49](../../crates/skrun/src/main.rs#L44-L49) · [main.rs:215-244](../../crates/skrun/src/main.rs#L215-L244) · [main.rs:246-311](../../crates/skrun/src/main.rs#L246-L311) · [main.rs:313-374](../../crates/skrun/src/main.rs#L313-L374) · [main.rs:376-397](../../crates/skrun/src/main.rs#L376-L397) · +1</sub>
+<sub>来源: [main.rs:46-51](../../crates/skrun/src/main.rs#L46-L51) · [main.rs:272-301](../../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-431](../../crates/skrun/src/main.rs#L370-L431) · [main.rs:544-565](../../crates/skrun/src/main.rs#L544-L565) · +1</sub>
+
+### Catalog 命令
+
+`skrun catalog` 处理的是一个指导性 skill 目录，而不是单个制品：每个含 `SKILL.md` 的非隐藏子目录，以及除 `SKILL_REGISTRY.md`、`README.md`、`README_CN.md`、`AGENTS.md` 和 `CLAUDE.md` 之外的每个顶层 `*.md`。
+
+| 命令 | 参数（默认值） | 何时以 1 退出 |
+|---|---|---|
+| `index <dir>` | `--out <file>`（stdout） | 目录无法读取 |
+| `registry <dir>` | `--registry`（`<dir>/SKILL_REGISTRY.md`）、`--write` | 不带 `--write` 时：表格有偏差；两种模式下：文件不存在、没有表格，或无法读写（`--write` 修复后以 0 退出） |
+| `check <dir>` | `--registry`、`--index` | 有任何错误 |
+
+`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及看起来像私钥或 AWS、OpenAI、GitHub、Slack 令牌的行（只打印 `path:line`，从不打印值）。唯一的警告是 frontmatter `name` 与目录名不同。注册表只在文件存在或给出 `--registry` 时检查；索引只在 `<dir>/skills.json` 存在或给出 `--index` 时检查。[工作原理](#how-it-works) 解释了输出为何是确定性的。
+
+<sub>来源: [main.rs:125-152](../../crates/skrun/src/main.rs#L125-L152) · [main.rs:506-523](../../crates/skrun/src/main.rs#L506-L523) · [main.rs:433-504](../../crates/skrun/src/main.rs#L433-L504) · [catalog.rs:57-63](../../crates/skrun/src/catalog.rs#L57-L63) · [catalog.rs:336-382](../../crates/skrun/src/catalog.rs#L336-L382) · +2</sub>
 
 ### 环境变量与默认路径
 
@@ -180,7 +194,7 @@ CLI 会提前计算这个默认值（`root.unwrap_or(default_skills_dir()?)`）�
 
 `build` 构建 `rust_binary` 时，除非指定 `--target-dir`，否则使用 `<system temp dir>/skrun-skill-targets/<id>` 作为 Cargo 的 target 目录，因此默认情况下，skill 构建不会在 skill 目录中写入 Cargo target 目录。Python SDK 自行解析同样的根目录（会展开 `~`），设置了 `root=` 参数时则直接传递该参数。
 
-<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:357-365](../../crates/skrun/src/main.rs#L357-L365) · +3</sub>
 
 ### artifact.json
 
@@ -310,6 +324,14 @@ stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根�
 
 <sub>来源: [lib.rs:39-151](../../crates/py/src/lib.rs#L39-L151) · [skill.py:316-331](../../python/skrun/skill.py#L316-L331)</sub>
 
+### 为什么 catalog 的输出可以放心提交
+
+`catalog` 从不运行 skill，不调用 git，也不访问网络；它只读取目录，所以输出可以提交并以 diff 审阅。`build_index` 按 id 排序 skill、按路径排序脚本，不记录时间戳或绝对路径。每个 skill 保存 frontmatter（`name`、`description`、`version`、`tags`、`requires`）、入口文件大小 `bytes`、文件夹内的 `.py`、`.sh`、`.js`/`.mjs` 和 `.ts` 脚本（Python 脚本附带导入的顶层模块），以及相对链接和目标是否存在。因此目录不变时 `skills.json` 也不变，`check` 正是据此判断提交的副本是否过期。
+
+`reconcile_registry` 把 `SKILL_REGISTRY.md` 当作人工维护的文本。它找到 `| Skill | When to read | Entrypoint |` 表格，原样按顺序保留仍有效的行，删除入口缺失、不是 skill 或重复的行，并为未登记的 skill 追加 `| name | summary | [id](entrypoint) |`，其中 summary 是描述的第一句，截断到 160 个字符。表格之外的行和换行符保持不变。表头匹配忽略首尾空白；没有表格时直接报错，从不写入文件。
+
+<sub>来源: [catalog.rs:11-15](../../crates/skrun/src/catalog.rs#L11-L15) · [catalog.rs:385-417](../../crates/skrun/src/catalog.rs#L385-L417) · [catalog.rs:446-550](../../crates/skrun/src/catalog.rs#L446-L550) · [catalog.rs:1157-1194](../../crates/skrun/src/catalog.rs#L1157-L1194) · [catalog.rs:820-868](../../crates/skrun/src/catalog.rs#L820-L868) · +2</sub>
+
 <a id="contributing"></a>
 
 ## 参与开发
@@ -356,7 +378,7 @@ make check    # lint + test + python
 
 runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must Not`、`Inputs`、`Outputs`、`Depends On`、`Verify`）。转移职责时要更新它，并遵守 `Must Not` 列表：runtime 不做规划、不解析 `@skill` 提及、不渲染 UI，也不保存持久状态。新操作应先放进 `runtime.rs`，再通过 `main.rs` 和 `crates/py/src/lib.rs` 暴露出去，绝不在 Python 中实现。
 
-<sub>来源: [runtime.rs:55-61](../../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:376-405](../../crates/skrun/src/main.rs#L376-L405) · [runtime.rs:3-17](../../crates/skrun/src/runtime.rs#L3-L17)</sub>
+<sub>来源: [runtime.rs:55-61](../../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:544-573](../../crates/skrun/src/main.rs#L544-L573) · [runtime.rs:3-17](../../crates/skrun/src/runtime.rs#L3-L17)</sub>
 
 <a id="structure"></a>
 
@@ -364,13 +386,13 @@ runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must
 
 本页由 Codocia 根据代码自动生成，每次 build 重新计算：功能区划分、各区自带的说明、区之间的 import 依赖，以及讲解各区的页面。
 
-范围内共 50 个文件，4,394 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
+范围内共 51 个文件，6,770 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
 
 ### 文件结构
 
 **仓库根目录**
 
-- （直接文件） — 410 行，5 个文件。skrun executable skill runtime internals.\
+- （根目录文件） — 448 行，5 个文件。skrun executable skill runtime internals.\
   讲解：[概览](#overview) (2), [快速上手](#getting-started) (1), [参与开发](#contributing) (3)
 - `.github/` — 313 行，4 个文件\
   讲解：[快速上手](#getting-started) (2), [参与开发](#contributing) (1)
@@ -378,22 +400,19 @@ runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must
   核心文件：`check.sh`\
   讲解：[参与开发](#contributing) (1)
 
-**`crates/py/`**
+**`crates/`**
 
-- （直接文件） — 31 行，2 个文件。PyO3 module boundary for the skrun executable skill runtime.\
-  核心文件：`build.rs`\
-  讲解：[参与开发](#contributing) (1)
-- `src/` — 238 行，1 个文件。PyO3 module boundary for the skrun executable skill runtime.\
-  核心文件：`lib.rs`\
-  讲解：[概览](#overview) (1), [工作原理](#how-it-works) (1)
+- `py/` — 269 行，3 个文件。PyO3 module boundary for the skrun executable skill runtime.\
+  核心文件：`src/lib.rs` `build.rs`\
+  讲解：[概览](#overview) (1), [工作原理](#how-it-works) (1), [参与开发](#contributing) (1)
 
 **`crates/skrun/`**
 
 - （直接文件） — 19 行，1 个文件。Public API for the skrun executable skill runtime.\
   讲解：[快速上手](#getting-started) (1)
-- `src/` — 2,030 行，3 个文件。Public API for the skrun executable skill runtime.\
-  核心文件：`lib.rs` `runtime.rs` `main.rs`\
-  讲解：[概览](#overview) (3), [快速上手](#getting-started) (3), [参考](#reference) (6), [工作原理](#how-it-works) (6), [参与开发](#contributing) (1)
+- `src/` — 4,368 行，4 个文件。Public API for the skrun executable skill runtime.\
+  核心文件：`catalog.rs` `lib.rs` `runtime.rs`\
+  讲解：[概览](#overview) (3), [快速上手](#getting-started) (3), [参考](#reference) (7), [工作原理](#how-it-works) (7), [参与开发](#contributing) (1)
 
 **`examples/`**
 

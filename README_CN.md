@@ -128,6 +128,24 @@ cdp-browser    CDP browser-control binary skill
 
 较复杂的二进制示例展示了如何给现有的 stdin/stdout 工具加上 `artifact.json` 和 JSON schema 文件，把它变成 skrun 制品。
 
+## Skill 仓库目录
+
+`skrun catalog` 维护一个指导性 skill 目录：含 `SKILL.md` 的子目录，以及顶层的 `*.md` 文件（`SKILL_REGISTRY.md`、README、`AGENTS.md`、`CLAUDE.md` 除外）。它从不运行 skill，也不调用 git 或网络。
+
+```bash
+# 写出确定性的 skills.json 索引（不带 --out 时输出到 stdout）
+cargo run -p skrun -- catalog index skills --out skills/skills.json
+
+# 报告 SKILL_REGISTRY.md 的偏差；不同步或缺少表格时以 1 退出
+cargo run -p skrun -- catalog registry skills
+
+# 删除失效/重复的行，为未登记的 skill 追加行；同步后以 0 退出
+cargo run -p skrun -- catalog registry skills --write
+
+# 检查 frontmatter、链接、注册表、过期索引和疑似密钥；有错误时以 1 退出
+cargo run -p skrun -- catalog check skills
+```
+
 ## Agent 框架示例
 
 skrun 不取代主 agent 框架。用你已经在用的框架包装可执行 skill 即可：

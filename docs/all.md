@@ -36,7 +36,7 @@ Every skill directory has a `kind` (`ArtifactKind`):
 
 ### One runtime, three front doors
 
-All behaviour lives in one Rust module, `crates/skrun/src/runtime.rs`. The `skrun` crate re-exports it as a library and also ships the `skrun` CLI binary. Python reaches the same code through `skrun-native` (`crates/py`), a PyO3 extension that maturin installs as `skrun.skrun_native`; the pure-Python `skrun` package only converts arguments and JSON.
+Skill behaviour lives in one Rust module, `crates/skrun/src/runtime.rs`; a second module, `catalog`, only does bookkeeping for a directory of guidance skills ([Reference](#reference)). The `skrun` crate re-exports the runtime as a library and also ships the `skrun` CLI binary. Python reaches the same code through `skrun-native` (`crates/py`), a PyO3 extension that maturin installs as `skrun.skrun_native`; the pure-Python `skrun` package only converts arguments and JSON.
 
 ```mermaid
 flowchart LR
@@ -48,7 +48,7 @@ flowchart LR
 
 Because the Python package has no subprocess fallback, a Python call and a CLI call validate and execute a skill identically.
 
-<sub>Sources: [lib.rs:1-13](../crates/skrun/src/lib.rs#L1-L13) · [lib.rs:103-129](../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../pyproject.toml#L38-L44)</sub>
+<sub>Sources: [lib.rs:1-14](../crates/skrun/src/lib.rs#L1-L14) · [lib.rs:103-129](../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../pyproject.toml#L38-L44)</sub>
 
 ### Why the workspace is this small
 
@@ -82,16 +82,16 @@ Both packages are published: PyPI has `skrun` 0.1.0 and crates.io has `skrun` 0.
 skrun skill new --kind rust_binary --id rust-echo /tmp/rust-echo
 skrun skill build /tmp/rust-echo
 skrun skill run --input '{"ok":true}' /tmp/rust-echo
-## {
-##   "ok": true
-## }
+# {
+#   "ok": true
+# }
 ```
 
 `new` writes a standalone Cargo project (`Cargo.toml` with an empty `[workspace]`, `src/main.rs` that echoes stdin), permissive `schema/input.json` and `schema/output.json`, a `SKILL.md`, and `artifact.json` with `entry: bin/release/rust-echo`. `build` runs Cargo and copies the binary to that `entry` path. `run` pipes the input to the binary and pretty-prints the JSON object it returns.
 
 For Python, use `--kind python_uv`: the scaffold is a `pyproject.toml` plus an echoing `skill.py`, and `build` runs `uv lock`/`uv sync`.
 
-<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:73-81](../crates/skrun/src/main.rs#L73-L81)</sub>
+<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:75-83](../crates/skrun/src/main.rs#L75-L83)</sub>
 
 ### Install it and call it from Python
 
@@ -112,7 +112,7 @@ skrun.skill("/tmp/rust-echo").call({"ok": True})   # or by path
 
 `skrun.skill` treats its argument as a path when that directory contains `artifact.json` or `SKILL.md`, otherwise as an id under the skills root. Because install copies, re-install with `--overwrite` after rebuilding a skill ([How It Works](#how-it-works)).
 
-<sub>Sources: [main.rs:82-107](../crates/skrun/src/main.rs#L82-L107) · [skill.py:236-240](../python/skrun/skill.py#L236-L240)</sub>
+<sub>Sources: [main.rs:84-109](../crates/skrun/src/main.rs#L84-L109) · [skill.py:236-240](../python/skrun/skill.py#L236-L240)</sub>
 
 ### Try a real example
 
@@ -150,11 +150,11 @@ def regex_finder_tool(pattern: str, text: str) -> dict:
 
 Exact names for the CLI, environment, file formats and Python API, copied from the code. `skrun`, `skrun -h`, `skrun --help` and `skrun help` print the usage text.
 
-<sub>Sources: [main.rs:438-450](../crates/skrun/src/main.rs#L438-L450)</sub>
+<sub>Sources: [main.rs:248-251](../crates/skrun/src/main.rs#L248-L251) · [main.rs:606-621](../crates/skrun/src/main.rs#L606-L621)</sub>
 
 ### CLI commands and flags
 
-All commands live under `skrun skill`. Positional `<dir>` / `<id>` may appear anywhere among the flags.
+Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<dir>` / `<id>` may appear anywhere among the flags.
 
 | command | flags (default) |
 |---|---|
@@ -167,7 +167,21 @@ All commands live under `skrun skill`. Positional `<dir>` / `<id>` may appear an
 
 `--root` defaults to the skills root (see below). Text output of `list` and `show` is tab-separated `id kind version name`. Passing both a directory and `--id` to `run` is an error. `--cargo` and `--uv` exist but are not in the usage text. Errors print `Error: ...` to stderr and exit 1.
 
-<sub>Sources: [main.rs:44-49](../crates/skrun/src/main.rs#L44-L49) · [main.rs:215-244](../crates/skrun/src/main.rs#L215-L244) · [main.rs:246-311](../crates/skrun/src/main.rs#L246-L311) · [main.rs:313-374](../crates/skrun/src/main.rs#L313-L374) · [main.rs:376-397](../crates/skrun/src/main.rs#L376-L397) · +1</sub>
+<sub>Sources: [main.rs:46-51](../crates/skrun/src/main.rs#L46-L51) · [main.rs:272-301](../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-431](../crates/skrun/src/main.rs#L370-L431) · [main.rs:544-565](../crates/skrun/src/main.rs#L544-L565) · +1</sub>
+
+### Catalog commands
+
+`skrun catalog` works on a directory of guidance skills, not on one artifact: each non-hidden subdirectory with a `SKILL.md`, plus each top-level `*.md` except `SKILL_REGISTRY.md`, `README.md`, `README_CN.md`, `AGENTS.md` and `CLAUDE.md`.
+
+| command | flags (default) | exits 1 when |
+|---|---|---|
+| `index <dir>` | `--out <file>` (stdout) | the directory cannot be read |
+| `registry <dir>` | `--registry` (`<dir>/SKILL_REGISTRY.md`), `--write` | without `--write`, the table drifted; in both modes, the file is missing, has no table, or cannot be read or written (`--write` exits 0 after repairing) |
+| `check <dir>` | `--registry`, `--index` | any error |
+
+`check` reports as errors: a folder skill without frontmatter `name` or `description`, a broken relative link, a registry without the table or with drift, a `skills.json` that differs from a fresh index, and a line that looks like a private key or an AWS, OpenAI, GitHub or Slack token (printed as `path:line`, never the value). The only warning is a frontmatter `name` that differs from the directory name. The registry is checked only if it exists or `--registry` is given; the index only if `<dir>/skills.json` exists or `--index` is given. [How It Works](#how-it-works) explains why the outputs are deterministic.
+
+<sub>Sources: [main.rs:125-152](../crates/skrun/src/main.rs#L125-L152) · [main.rs:506-523](../crates/skrun/src/main.rs#L506-L523) · [main.rs:433-504](../crates/skrun/src/main.rs#L433-L504) · [catalog.rs:57-63](../crates/skrun/src/catalog.rs#L57-L63) · [catalog.rs:336-382](../crates/skrun/src/catalog.rs#L336-L382) · +2</sub>
 
 ### Environment and default paths
 
@@ -180,7 +194,7 @@ The CLI computes this default eagerly (`root.unwrap_or(default_skills_dir()?)`),
 
 `build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so by default skill builds write no Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
 
-<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:357-365](../crates/skrun/src/main.rs#L357-L365) · +3</sub>
 
 ### artifact.json
 
@@ -310,6 +324,14 @@ Both build steps capture output and report only stderr on failure. `markdown` sk
 
 <sub>Sources: [lib.rs:39-151](../crates/py/src/lib.rs#L39-L151) · [skill.py:316-331](../python/skrun/skill.py#L316-L331)</sub>
 
+### Why catalog output is safe to commit
+
+`catalog` never runs skills, calls git or touches the network; it only reads the directory, so its outputs can be committed and reviewed as diffs. `build_index` sorts skills by id and scripts by path and records no timestamps or absolute paths. Per skill it keeps the frontmatter (`name`, `description`, `version`, `tags`, `requires`), the entrypoint size as `bytes`, the folder's `.py`, `.sh`, `.js`/`.mjs` and `.ts` scripts (Python ones with their top-level imported modules), and relative links with whether the target exists. An unchanged directory therefore yields an identical `skills.json`, which is how `check` can call a committed copy stale.
+
+`reconcile_registry` treats `SKILL_REGISTRY.md` as curated text. It finds the `| Skill | When to read | Entrypoint |` table, keeps surviving rows verbatim and in order, drops rows whose entrypoint is missing, not a skill, or repeated, and appends `| name | summary | [id](entrypoint) |` for unlisted skills, where the summary is the description's first sentence, cut to 160 characters. Lines outside the table and line endings are kept. The header match ignores surrounding whitespace; with no table it fails and never writes the file.
+
+<sub>Sources: [catalog.rs:11-15](../crates/skrun/src/catalog.rs#L11-L15) · [catalog.rs:385-417](../crates/skrun/src/catalog.rs#L385-L417) · [catalog.rs:446-550](../crates/skrun/src/catalog.rs#L446-L550) · [catalog.rs:1157-1194](../crates/skrun/src/catalog.rs#L1157-L1194) · [catalog.rs:820-868](../crates/skrun/src/catalog.rs#L820-L868) · +2</sub>
+
 <a id="contributing"></a>
 
 ## Contributing
@@ -356,7 +378,7 @@ A new kind touches every `match` on `ArtifactKind` in `runtime.rs`: `validate`, 
 
 The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must Not`, `Inputs`, `Outputs`, `Depends On`, `Verify`). Update it when you move responsibility, and respect the `Must Not` lists: the runtime does not plan, parse `@skill` mentions, render UI or hold durable state. New operations belong in `runtime.rs` first and are then exposed through `main.rs` and `crates/py/src/lib.rs`, never implemented in Python.
 
-<sub>Sources: [runtime.rs:55-61](../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:376-405](../crates/skrun/src/main.rs#L376-L405) · [runtime.rs:3-17](../crates/skrun/src/runtime.rs#L3-L17)</sub>
+<sub>Sources: [runtime.rs:55-61](../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:544-573](../crates/skrun/src/main.rs#L544-L573) · [runtime.rs:3-17](../crates/skrun/src/runtime.rs#L3-L17)</sub>
 
 <a id="structure"></a>
 
@@ -364,13 +386,13 @@ The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must 
 
 Generated by Codocia from the code on every build: areas, each area's own description, import dependencies between areas, and the pages that explain them.
 
-In scope: 50 files, 4,394 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
+In scope: 51 files, 6,770 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
 
 ### Files
 
 **Repository root**
 
-- (files) — 410 lines, 5 files. skrun executable skill runtime internals.\
+- (root files) — 448 lines, 5 files. skrun executable skill runtime internals.\
   Explained in: [Overview](#overview) (2), [Getting Started](#getting-started) (1), [Contributing](#contributing) (3)
 - `.github/` — 313 lines, 4 files\
   Explained in: [Getting Started](#getting-started) (2), [Contributing](#contributing) (1)
@@ -378,22 +400,19 @@ In scope: 50 files, 4,394 lines; excluded `docs/**`, `python/tests/**`, `**/test
   Hub files: `check.sh`\
   Explained in: [Contributing](#contributing) (1)
 
-**`crates/py/`**
+**`crates/`**
 
-- (files) — 31 lines, 2 files. PyO3 module boundary for the skrun executable skill runtime.\
-  Hub files: `build.rs`\
-  Explained in: [Contributing](#contributing) (1)
-- `src/` — 238 lines, 1 file. PyO3 module boundary for the skrun executable skill runtime.\
-  Hub files: `lib.rs`\
-  Explained in: [Overview](#overview) (1), [How It Works](#how-it-works) (1)
+- `py/` — 269 lines, 3 files. PyO3 module boundary for the skrun executable skill runtime.\
+  Hub files: `src/lib.rs` `build.rs`\
+  Explained in: [Overview](#overview) (1), [How It Works](#how-it-works) (1), [Contributing](#contributing) (1)
 
 **`crates/skrun/`**
 
 - (files) — 19 lines, 1 file. Public API for the skrun executable skill runtime.\
   Explained in: [Getting Started](#getting-started) (1)
-- `src/` — 2,030 lines, 3 files. Public API for the skrun executable skill runtime.\
-  Hub files: `lib.rs` `runtime.rs` `main.rs`\
-  Explained in: [Overview](#overview) (3), [Getting Started](#getting-started) (3), [Reference](#reference) (6), [How It Works](#how-it-works) (6), [Contributing](#contributing) (1)
+- `src/` — 4,368 lines, 4 files. Public API for the skrun executable skill runtime.\
+  Hub files: `catalog.rs` `lib.rs` `runtime.rs`\
+  Explained in: [Overview](#overview) (3), [Getting Started](#getting-started) (3), [Reference](#reference) (7), [How It Works](#how-it-works) (7), [Contributing](#contributing) (1)
 
 **`examples/`**
 

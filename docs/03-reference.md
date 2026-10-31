@@ -8,11 +8,11 @@ title: Reference
 
 Exact names for the CLI, environment, file formats and Python API, copied from the code. `skrun`, `skrun -h`, `skrun --help` and `skrun help` print the usage text.
 
-<sub>Sources: [main.rs:438-450](../crates/skrun/src/main.rs#L438-L450)</sub>
+<sub>Sources: [main.rs:248-251](../crates/skrun/src/main.rs#L248-L251) · [main.rs:606-621](../crates/skrun/src/main.rs#L606-L621)</sub>
 
 ## CLI commands and flags
 
-All commands live under `skrun skill`. Positional `<dir>` / `<id>` may appear anywhere among the flags.
+Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<dir>` / `<id>` may appear anywhere among the flags.
 
 | command | flags (default) |
 |---|---|
@@ -25,7 +25,21 @@ All commands live under `skrun skill`. Positional `<dir>` / `<id>` may appear an
 
 `--root` defaults to the skills root (see below). Text output of `list` and `show` is tab-separated `id kind version name`. Passing both a directory and `--id` to `run` is an error. `--cargo` and `--uv` exist but are not in the usage text. Errors print `Error: ...` to stderr and exit 1.
 
-<sub>Sources: [main.rs:44-49](../crates/skrun/src/main.rs#L44-L49) · [main.rs:215-244](../crates/skrun/src/main.rs#L215-L244) · [main.rs:246-311](../crates/skrun/src/main.rs#L246-L311) · [main.rs:313-374](../crates/skrun/src/main.rs#L313-L374) · [main.rs:376-397](../crates/skrun/src/main.rs#L376-L397) · +1</sub>
+<sub>Sources: [main.rs:46-51](../crates/skrun/src/main.rs#L46-L51) · [main.rs:272-301](../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-431](../crates/skrun/src/main.rs#L370-L431) · [main.rs:544-565](../crates/skrun/src/main.rs#L544-L565) · +1</sub>
+
+## Catalog commands
+
+`skrun catalog` works on a directory of guidance skills, not on one artifact: each non-hidden subdirectory with a `SKILL.md`, plus each top-level `*.md` except `SKILL_REGISTRY.md`, `README.md`, `README_CN.md`, `AGENTS.md` and `CLAUDE.md`.
+
+| command | flags (default) | exits 1 when |
+|---|---|---|
+| `index <dir>` | `--out <file>` (stdout) | the directory cannot be read |
+| `registry <dir>` | `--registry` (`<dir>/SKILL_REGISTRY.md`), `--write` | without `--write`, the table drifted; in both modes, the file is missing, has no table, or cannot be read or written (`--write` exits 0 after repairing) |
+| `check <dir>` | `--registry`, `--index` | any error |
+
+`check` reports as errors: a folder skill without frontmatter `name` or `description`, a broken relative link, a registry without the table or with drift, a `skills.json` that differs from a fresh index, and a line that looks like a private key or an AWS, OpenAI, GitHub or Slack token (printed as `path:line`, never the value). The only warning is a frontmatter `name` that differs from the directory name. The registry is checked only if it exists or `--registry` is given; the index only if `<dir>/skills.json` exists or `--index` is given. [How It Works](04-how-it-works.md) explains why the outputs are deterministic.
+
+<sub>Sources: [main.rs:125-152](../crates/skrun/src/main.rs#L125-L152) · [main.rs:506-523](../crates/skrun/src/main.rs#L506-L523) · [main.rs:433-504](../crates/skrun/src/main.rs#L433-L504) · [catalog.rs:57-63](../crates/skrun/src/catalog.rs#L57-L63) · [catalog.rs:336-382](../crates/skrun/src/catalog.rs#L336-L382) · +2</sub>
 
 ## Environment and default paths
 
@@ -38,7 +52,7 @@ The CLI computes this default eagerly (`root.unwrap_or(default_skills_dir()?)`),
 
 `build` of a `rust_binary` uses `<system temp dir>/skrun-skill-targets/<id>` as Cargo's target directory unless `--target-dir` is given, so by default skill builds write no Cargo target directory into the skill directory. The Python SDK resolves the same root itself (expanding `~`), and passes its `root=` argument through when you set one.
 
-<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>Sources: [runtime.rs:50-53](../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../python/skrun/skill.py#L242-L248) · [main.rs:357-365](../crates/skrun/src/main.rs#L357-L365) · +3</sub>
 
 ## artifact.json
 

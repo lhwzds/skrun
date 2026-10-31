@@ -30,7 +30,7 @@ skrun 是一个面向 *skill* 的小型本地运行时。skill 就是一个目�
 
 ## 一个运行时，三个入口
 
-所有行为都在一个 Rust 模块 `crates/skrun/src/runtime.rs` 中。`skrun` crate 既把它作为库重新导出，也附带 `skrun` CLI 二进制。Python 通过 `skrun-native`（`crates/py`）调用同一份代码，这是一个 PyO3 扩展，由 maturin 安装为 `skrun.skrun_native`；纯 Python 的 `skrun` 包只负责转换参数和 JSON。
+skill 的行为都在一个 Rust 模块 `crates/skrun/src/runtime.rs` 中；另一个模块 `catalog` 只负责指导性 skill 目录的记账工作（[参考](03-reference.md)）。`skrun` crate 既把运行时作为库重新导出，也附带 `skrun` CLI 二进制。Python 通过 `skrun-native`（`crates/py`）调用同一份代码，这是一个 PyO3 扩展，由 maturin 安装为 `skrun.skrun_native`；纯 Python 的 `skrun` 包只负责转换参数和 JSON。
 
 ```mermaid
 flowchart LR
@@ -42,7 +42,7 @@ flowchart LR
 
 由于 Python 包没有子进程后备方案，通过 Python 调用和通过 CLI 调用时，skill 的校验和执行方式完全相同。
 
-<sub>来源: [lib.rs:1-13](../../crates/skrun/src/lib.rs#L1-L13) · [lib.rs:103-129](../../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../../pyproject.toml#L38-L44)</sub>
+<sub>来源: [lib.rs:1-14](../../crates/skrun/src/lib.rs#L1-L14) · [lib.rs:103-129](../../crates/py/src/lib.rs#L103-L129) · [skill.py:295-321](../../python/skrun/skill.py#L295-L321) · [pyproject.toml:38-44](../../pyproject.toml#L38-L44)</sub>
 
 ## 为什么工作区这么小
 

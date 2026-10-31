@@ -8,11 +8,11 @@ title: 参考
 
 CLI、环境变量、文件格式和 Python API 的准确名称，均摘自代码。`skrun`、`skrun -h`、`skrun --help` 和 `skrun help` 都会打印用法说明。
 
-<sub>来源: [main.rs:438-450](../../crates/skrun/src/main.rs#L438-L450)</sub>
+<sub>来源: [main.rs:248-251](../../crates/skrun/src/main.rs#L248-L251) · [main.rs:606-621](../../crates/skrun/src/main.rs#L606-L621)</sub>
 
 ## CLI 命令与参数
 
-所有命令都在 `skrun skill` 下。位置参数 `<dir>` / `<id>` 可以出现在参数之间的任意位置。
+skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 `<dir>` / `<id>` 可以出现在参数之间的任意位置。
 
 | 命令 | 参数（默认值） |
 |---|---|
@@ -25,7 +25,21 @@ CLI、环境变量、文件格式和 Python API 的准确名称，均摘自代�
 
 `--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 的文本输出是以制表符分隔的 `id kind version name`。给 `run` 同时传目录和 `--id` 会报错。`--cargo` 和 `--uv` 存在，但没有写进用法说明。出错时会向 stderr 打印 `Error: ...` 并以 1 退出。
 
-<sub>来源: [main.rs:44-49](../../crates/skrun/src/main.rs#L44-L49) · [main.rs:215-244](../../crates/skrun/src/main.rs#L215-L244) · [main.rs:246-311](../../crates/skrun/src/main.rs#L246-L311) · [main.rs:313-374](../../crates/skrun/src/main.rs#L313-L374) · [main.rs:376-397](../../crates/skrun/src/main.rs#L376-L397) · +1</sub>
+<sub>来源: [main.rs:46-51](../../crates/skrun/src/main.rs#L46-L51) · [main.rs:272-301](../../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-431](../../crates/skrun/src/main.rs#L370-L431) · [main.rs:544-565](../../crates/skrun/src/main.rs#L544-L565) · +1</sub>
+
+## Catalog 命令
+
+`skrun catalog` 处理的是一个指导性 skill 目录，而不是单个制品：每个含 `SKILL.md` 的非隐藏子目录，以及除 `SKILL_REGISTRY.md`、`README.md`、`README_CN.md`、`AGENTS.md` 和 `CLAUDE.md` 之外的每个顶层 `*.md`。
+
+| 命令 | 参数（默认值） | 何时以 1 退出 |
+|---|---|---|
+| `index <dir>` | `--out <file>`（stdout） | 目录无法读取 |
+| `registry <dir>` | `--registry`（`<dir>/SKILL_REGISTRY.md`）、`--write` | 不带 `--write` 时：表格有偏差；两种模式下：文件不存在、没有表格，或无法读写（`--write` 修复后以 0 退出） |
+| `check <dir>` | `--registry`、`--index` | 有任何错误 |
+
+`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及看起来像私钥或 AWS、OpenAI、GitHub、Slack 令牌的行（只打印 `path:line`，从不打印值）。唯一的警告是 frontmatter `name` 与目录名不同。注册表只在文件存在或给出 `--registry` 时检查；索引只在 `<dir>/skills.json` 存在或给出 `--index` 时检查。[工作原理](04-how-it-works.md) 解释了输出为何是确定性的。
+
+<sub>来源: [main.rs:125-152](../../crates/skrun/src/main.rs#L125-L152) · [main.rs:506-523](../../crates/skrun/src/main.rs#L506-L523) · [main.rs:433-504](../../crates/skrun/src/main.rs#L433-L504) · [catalog.rs:57-63](../../crates/skrun/src/catalog.rs#L57-L63) · [catalog.rs:336-382](../../crates/skrun/src/catalog.rs#L336-L382) · +2</sub>
 
 ## 环境变量与默认路径
 
@@ -38,7 +52,7 @@ CLI 会提前计算这个默认值（`root.unwrap_or(default_skills_dir()?)`）�
 
 `build` 构建 `rust_binary` 时，除非指定 `--target-dir`，否则使用 `<system temp dir>/skrun-skill-targets/<id>` 作为 Cargo 的 target 目录，因此默认情况下，skill 构建不会在 skill 目录中写入 Cargo target 目录。Python SDK 自行解析同样的根目录（会展开 `~`），设置了 `root=` 参数时则直接传递该参数。
 
-<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:300-308](../../crates/skrun/src/main.rs#L300-L308) · +3</sub>
+<sub>来源: [runtime.rs:50-53](../../crates/skrun/src/runtime.rs#L50-L53) · [runtime.rs:719-725](../../crates/skrun/src/runtime.rs#L719-L725) · [runtime.rs:954-959](../../crates/skrun/src/runtime.rs#L954-L959) · [skill.py:242-248](../../python/skrun/skill.py#L242-L248) · [main.rs:357-365](../../crates/skrun/src/main.rs#L357-L365) · +3</sub>
 
 ## artifact.json
 

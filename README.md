@@ -139,6 +139,26 @@ cdp-browser    CDP browser-control binary skill
 The richer binary examples show how existing stdin/stdout tools become skrun
 artifacts by adding `artifact.json` and JSON schema files.
 
+## Skills Repository Catalog
+
+`skrun catalog` maintains a directory of guidance skills: subdirectories with
+`SKILL.md` plus top-level `*.md` files (except `SKILL_REGISTRY.md`, READMEs,
+`AGENTS.md`, `CLAUDE.md`). It never runs skills, calls git or the network.
+
+```bash
+# write a deterministic skills.json index (stdout without --out)
+cargo run -p skrun -- catalog index skills --out skills/skills.json
+
+# report SKILL_REGISTRY.md drift; exits 1 when out of sync or the table is missing
+cargo run -p skrun -- catalog registry skills
+
+# drop stale/duplicate rows, append rows for unlisted skills; exits 0 once in sync
+cargo run -p skrun -- catalog registry skills --write
+
+# frontmatter, links, registry, stale index, possible secrets; exits 1 on errors
+cargo run -p skrun -- catalog check skills
+```
+
 ## Agent Framework Examples
 
 skrun does not replace the main agent framework. Wrap executable skills from

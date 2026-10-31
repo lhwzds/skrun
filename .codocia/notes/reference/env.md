@@ -6,10 +6,10 @@ evidence:
   - crates/skrun/src/runtime.rs:719-725 #071569a1eafa
   - crates/skrun/src/runtime.rs:954-959 #6c342c39a43a
   - python/skrun/skill.py:242-248 #a469e273d384
-  - crates/skrun/src/main.rs:300-308 #7ac1b9a4dc22
-  - crates/skrun/src/main.rs:329 #206102ded37d
-  - crates/skrun/src/main.rs:351-353 #f2e650e63d7f
-  - crates/skrun/src/main.rs:369-371 #eee19c4338c0
+  - crates/skrun/src/main.rs:357-365 #7ac1b9a4dc22
+  - crates/skrun/src/main.rs:386 #206102ded37d
+  - crates/skrun/src/main.rs:408-410 #f2e650e63d7f
+  - crates/skrun/src/main.rs:426-428 #eee19c4338c0
 ---
 
 | name | effect |
