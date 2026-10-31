@@ -1052,7 +1052,10 @@ fn decode_skill_output(output: Output) -> Result<SkillRunOutput> {
     let value: Value = serde_json::from_str(stdout.trim()).with_context(|| {
         format!(
             "decode skill output JSON from stdout: {}",
-            stdout.trim().chars().take(120).collect::<String>()
+            crate::catalog::redact(stdout.trim())
+                .chars()
+                .take(120)
+                .collect::<String>()
         )
     })?;
     if !value.is_object() {

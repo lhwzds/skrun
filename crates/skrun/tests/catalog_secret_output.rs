@@ -131,6 +131,25 @@ fn the_new_secret_shapes_never_reach_the_output() {
     }
 }
 
+#[test]
+fn a_secret_at_the_cut_of_a_description_never_reaches_the_search_output() {
+    let dir = secret_tail_fixture("catalog-secret-tail");
+    let path = dir.to_str().unwrap();
+
+    // The text output holds neither the key nor a piece of it.
+    let output = run(&["catalog", "search", path, "demo"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_clean_pieces(&stdout);
+
+    // The JSON output holds neither the key nor a piece of it.
+    let output = run(&["catalog", "search", path, "demo", "--json"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_clean_pieces(&stdout);
+    assert!(stdout.contains("<redacted>"), "{stdout}");
+}
+
 /// Run the built binary with the given arguments.
 fn run(args: &[&str]) -> Output {
     Command::new(BINARY)
@@ -145,6 +164,15 @@ fn assert_clean(output: &Output) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stdout.contains(SECRET), "stdout: {stdout}");
     assert!(!stderr.contains(SECRET), "stderr: {stderr}");
+}
+
+/// Assert that the text holds neither the secret nor a piece of it.
+fn assert_clean_pieces(text: &str) {
+    assert!(!text.contains(SECRET), "text: {text}");
+    for start in 0..=SECRET.len() - 8 {
+        let piece = &SECRET[start..start + 8];
+        assert!(!text.contains(piece), "text: {text}");
+    }
 }
 
 /// Assert that neither stream of the command holds a token of any shape.
@@ -187,6 +215,18 @@ fn secret_fixture(name: &str) -> PathBuf {
             "| --- | --- | --- |\n",
             "| Broken | When breaking | AKIAIOSFODNN7EXAMPLE |\n",
         ),
+    );
+    dir
+}
+
+/// A skills directory whose description holds a key at its very end, so the
+/// key crosses the cut of the search summary.
+fn secret_tail_fixture(name: &str) -> PathBuf {
+    let dir = temp_dir(name);
+    let prefix = "a".repeat(109);
+    write(
+        &dir.join("demo/SKILL.md"),
+        &format!("---\nname: Demo\ndescription: {prefix} {SECRET}\n---\n\n# Demo\n"),
     );
     dir
 }

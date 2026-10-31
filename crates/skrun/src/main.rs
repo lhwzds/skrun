@@ -30,7 +30,7 @@
 //! ## Verify
 //! - cargo test -p skrun
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use skrun::catalog;
 use skrun::{
@@ -47,8 +47,49 @@ use std::time::Duration;
 fn main() {
     if let Err(error) = run(env::args().skip(1).collect()) {
         eprintln!("Error: {error:#}");
-        std::process::exit(1);
+        std::process::exit(exit_code(&error));
     }
+}
+
+/// The exit status of a failed command.
+///
+/// A usage error, an error about how the command was invoked, ends the
+/// command with status 2; every other error ends it with status 1.
+fn exit_code(error: &anyhow::Error) -> i32 {
+    let usage = error.chain().any(|cause| cause.is::<UsageError>());
+    if usage { USAGE_EXIT_CODE } else { 1 }
+}
+
+/// The exit status of a usage error.
+const USAGE_EXIT_CODE: i32 = 2;
+
+/// An error about how the command was invoked.
+///
+/// A usage error is an error of the command line, not of the work itself, so
+/// it ends the command with its own status.
+#[derive(Debug, Clone)]
+struct UsageError {
+    message: String,
+}
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+/// Build a usage error.
+fn usage_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(UsageError {
+        message: message.into(),
+    })
+}
+
+/// Build a usage error result.
+fn usage<T>(message: impl Into<String>) -> Result<T> {
+    Err(usage_error(message))
 }
 
 fn run(args: Vec<String>) -> Result<()> {
@@ -148,6 +189,13 @@ fn run(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
+        Command::Catalog(CatalogCommand::Search(options)) => {
+            let code = run_catalog_search(&options)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
     }
 }
 
@@ -173,6 +221,7 @@ enum CatalogCommand {
     Index(CatalogIndexCommand),
     Registry(CatalogRegistryCommand),
     Check(CatalogCheckCommand),
+    Search(CatalogSearchCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -239,6 +288,16 @@ struct CatalogCheckCommand {
     index: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogSearchCommand {
+    dir: PathBuf,
+    query: String,
+    kind: Option<catalog::SkillKind>,
+    has_scripts: bool,
+    limit: usize,
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
     Text,
@@ -253,7 +312,7 @@ fn parse(args: Vec<String>) -> Result<Command> {
     match cursor.next_required("command")?.as_str() {
         "skill" => parse_skill(cursor).map(Command::Skill),
         "catalog" => parse_catalog(cursor).map(Command::Catalog),
-        other => bail!("unknown command `{}`", catalog::redact(other)),
+        other => usage(format!("unknown command `{}`", catalog::redact(other))),
     }
 }
 
@@ -265,7 +324,10 @@ fn parse_skill(mut cursor: Cursor) -> Result<SkillCommand> {
         "install-local" => parse_skill_install_local(cursor).map(SkillCommand::InstallLocal),
         "list" => parse_skill_list(cursor).map(SkillCommand::List),
         "show" => parse_skill_show(cursor).map(SkillCommand::Show),
-        other => bail!("unknown skill command `{}`", catalog::redact(other)),
+        other => usage(format!(
+            "unknown skill command `{}`",
+            catalog::redact(other)
+        )),
     }
 }
 
@@ -282,15 +344,17 @@ fn parse_skill_new(mut cursor: Cursor) -> Result<NewCommand> {
             "--id" => id = Some(cursor.next_required("--id value")?),
             "--name" => name = Some(cursor.next_required("--name value")?),
             "--version" => version = cursor.next_required("--version value")?,
-            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
             value => dir = Some(PathBuf::from(value)),
         }
     }
 
-    let kind = kind.ok_or_else(|| anyhow::anyhow!("missing --kind"))?;
-    let id = id.ok_or_else(|| anyhow::anyhow!("missing --id"))?;
+    let kind = kind.ok_or_else(|| usage_error("missing --kind"))?;
+    let id = id.ok_or_else(|| usage_error("missing --id"))?;
     let name = name.unwrap_or_else(|| title_from_id(&id));
-    let dir = dir.ok_or_else(|| anyhow::anyhow!("missing skill directory"))?;
+    let dir = dir.ok_or_else(|| usage_error("missing skill directory"))?;
     let scaffold = match kind {
         ArtifactKind::Markdown => ScaffoldOptions::markdown(id, name, version),
         ArtifactKind::RustBinary => ScaffoldOptions::rust_binary(id, name, version),
@@ -312,13 +376,15 @@ fn parse_skill_build(mut cursor: Cursor) -> Result<BuildCommand> {
             }
             "--cargo" => build.cargo = OsString::from(cursor.next_required("--cargo value")?),
             "--uv" => build.uv = OsString::from(cursor.next_required("--uv value")?),
-            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
             value => dir = Some(PathBuf::from(value)),
         }
     }
 
     Ok(BuildCommand {
-        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skill directory"))?,
+        dir: dir.ok_or_else(|| usage_error("missing skill directory"))?,
         build,
     })
 }
@@ -336,7 +402,7 @@ fn parse_skill_run(mut cursor: Cursor) -> Result<RunCommand> {
                 input = serde_json::from_str(&cursor.next_required("--input value")?)
                     .context("parse --input JSON")?;
                 if !input.is_object() {
-                    bail!("--input must be a JSON object");
+                    return usage("--input must be a JSON object");
                 }
             }
             "--timeout" => {
@@ -349,19 +415,23 @@ fn parse_skill_run(mut cursor: Cursor) -> Result<RunCommand> {
             "--uv" => run.uv = OsString::from(cursor.next_required("--uv value")?),
             "--id" => id = Some(cursor.next_required("--id value")?),
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
-            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
             value => dir = Some(PathBuf::from(value)),
         }
     }
 
     let target = match (dir, id) {
-        (Some(_), Some(_)) => bail!("skill run accepts either --id or a directory, not both"),
+        (Some(_), Some(_)) => {
+            return usage("skill run accepts either --id or a directory, not both");
+        }
         (Some(dir), None) => RunTarget::Dir(dir),
         (None, Some(id)) => RunTarget::Installed {
             root: root.unwrap_or(default_skills_dir()?),
             id,
         },
-        (None, None) => bail!("missing skill directory or --id"),
+        (None, None) => return usage("missing skill directory or --id"),
     };
 
     Ok(RunCommand { target, input, run })
@@ -378,7 +448,9 @@ fn parse_skill_install_local(mut cursor: Cursor) -> Result<InstallLocalCommand> 
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
             "--id" => skill_id = Some(cursor.next_required("--id value")?),
             "--overwrite" => overwrite = true,
-            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
             value => source = Some(PathBuf::from(value)),
         }
     }
@@ -390,7 +462,7 @@ fn parse_skill_install_local(mut cursor: Cursor) -> Result<InstallLocalCommand> 
     }
 
     Ok(InstallLocalCommand {
-        source: source.ok_or_else(|| anyhow::anyhow!("missing source skill directory"))?,
+        source: source.ok_or_else(|| usage_error("missing source skill directory"))?,
         install,
     })
 }
@@ -402,7 +474,9 @@ fn parse_skill_list(mut cursor: Cursor) -> Result<ListCommand> {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
             "--format" => format = parse_output_format(&cursor.next_required("--format value")?)?,
-            value => bail!("unknown argument `{}`", catalog::redact(value)),
+            value => {
+                return usage(format!("unknown argument `{}`", catalog::redact(value)));
+            }
         }
     }
     Ok(ListCommand {
@@ -420,14 +494,14 @@ fn parse_skill_show(mut cursor: Cursor) -> Result<ShowCommand> {
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
             "--format" => format = parse_output_format(&cursor.next_required("--format value")?)?,
             value if value.starts_with('-') => {
-                bail!("unknown argument `{}`", catalog::redact(value))
+                return usage(format!("unknown argument `{}`", catalog::redact(value)));
             }
             value => id = Some(value.to_string()),
         }
     }
     Ok(ShowCommand {
         root: root.unwrap_or(default_skills_dir()?),
-        id: id.ok_or_else(|| anyhow::anyhow!("missing skill id"))?,
+        id: id.ok_or_else(|| usage_error("missing skill id"))?,
         format,
     })
 }
@@ -437,7 +511,11 @@ fn parse_catalog(mut cursor: Cursor) -> Result<CatalogCommand> {
         "index" => parse_catalog_index(cursor).map(CatalogCommand::Index),
         "registry" => parse_catalog_registry(cursor).map(CatalogCommand::Registry),
         "check" => parse_catalog_check(cursor).map(CatalogCommand::Check),
-        other => bail!("unknown catalog command `{}`", catalog::redact(other)),
+        "search" => parse_catalog_search(cursor).map(CatalogCommand::Search),
+        other => usage(format!(
+            "unknown catalog command `{}`",
+            catalog::redact(other)
+        )),
     }
 }
 
@@ -448,13 +526,15 @@ fn parse_catalog_index(mut cursor: Cursor) -> Result<CatalogIndexCommand> {
     while let Some(arg) = cursor.next() {
         match arg.as_str() {
             "--out" => out = Some(PathBuf::from(cursor.next_required("--out value")?)),
-            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
             value => dir = Some(PathBuf::from(value)),
         }
     }
 
     Ok(CatalogIndexCommand {
-        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skills directory"))?,
+        dir: dir.ok_or_else(|| usage_error("missing skills directory"))?,
         out,
     })
 }
@@ -470,13 +550,15 @@ fn parse_catalog_registry(mut cursor: Cursor) -> Result<CatalogRegistryCommand> 
                 registry = Some(PathBuf::from(cursor.next_required("--registry value")?))
             }
             "--write" => write = true,
-            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
             value => dir = Some(PathBuf::from(value)),
         }
     }
 
     Ok(CatalogRegistryCommand {
-        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skills directory"))?,
+        dir: dir.ok_or_else(|| usage_error("missing skills directory"))?,
         registry,
         write,
     })
@@ -493,16 +575,89 @@ fn parse_catalog_check(mut cursor: Cursor) -> Result<CatalogCheckCommand> {
                 registry = Some(PathBuf::from(cursor.next_required("--registry value")?))
             }
             "--index" => index = Some(PathBuf::from(cursor.next_required("--index value")?)),
-            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
             value => dir = Some(PathBuf::from(value)),
         }
     }
 
     Ok(CatalogCheckCommand {
-        dir: dir.ok_or_else(|| anyhow::anyhow!("missing skills directory"))?,
+        dir: dir.ok_or_else(|| usage_error("missing skills directory"))?,
         registry,
         index,
     })
+}
+
+/// Parse the `catalog search` command.
+///
+/// The first positional argument is the skills directory, every other
+/// positional argument is a part of the query. The query is matched as one
+/// text, so a Chinese term and an English term can be searched for together.
+fn parse_catalog_search(mut cursor: Cursor) -> Result<CatalogSearchCommand> {
+    let mut kind = None;
+    let mut has_scripts = false;
+    let mut limit = catalog::SEARCH_LIMIT;
+    let mut json = false;
+    let mut dir = None;
+    let mut query = Vec::new();
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--kind" => kind = Some(parse_search_kind(&cursor.next_required("--kind value")?)?),
+            "--has-scripts" => has_scripts = true,
+            "--limit" => limit = parse_limit(&cursor.next_required("--limit value")?)?,
+            "--json" => json = true,
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
+            value => {
+                if dir.is_none() {
+                    dir = Some(PathBuf::from(value));
+                } else {
+                    query.push(value.to_string());
+                }
+            }
+        }
+    }
+
+    let dir = dir.ok_or_else(|| usage_error("missing skills directory"))?;
+    let query = query.join(" ");
+    if query.split_whitespace().next().is_none() {
+        return usage("missing query");
+    }
+
+    Ok(CatalogSearchCommand {
+        dir,
+        query,
+        kind,
+        has_scripts,
+        limit,
+        json,
+    })
+}
+
+/// The kind of skill a search keeps.
+fn parse_search_kind(value: &str) -> Result<catalog::SkillKind> {
+    match value {
+        "folder" => Ok(catalog::SkillKind::Folder),
+        "flat" => Ok(catalog::SkillKind::Flat),
+        other => usage(format!("unknown search kind `{}`", catalog::redact(other))),
+    }
+}
+
+/// The number of results a search keeps.
+fn parse_limit(value: &str) -> Result<usize> {
+    let limit = value.parse::<usize>().map_err(|_| {
+        usage_error(format!(
+            "invalid --limit value `{}`",
+            catalog::redact(value)
+        ))
+    })?;
+    if limit < 1 {
+        return usage("--limit must be at least 1");
+    }
+    Ok(limit)
 }
 
 /// Run the `catalog registry` command and return its exit status.
@@ -532,6 +687,36 @@ fn run_catalog_registry_to(options: &CatalogRegistryCommand, out: &mut dyn Write
     write!(out, "{}", report.render())?;
     out.flush()?;
     Ok(report.exit_code(options.write))
+}
+
+/// Run the `catalog search` command and return its exit status.
+///
+/// The results are the only thing the command prints; the status is 1 when
+/// no skill matches the query.
+fn run_catalog_search(options: &CatalogSearchCommand) -> Result<i32> {
+    let mut stdout = std::io::stdout().lock();
+    run_catalog_search_to(options, &mut stdout)
+}
+
+/// Run the `catalog search` command and write its results to `out`.
+///
+/// The results are the only thing the command prints; the status is 1 when
+/// no skill matches the query.
+fn run_catalog_search_to(options: &CatalogSearchCommand, out: &mut dyn Write) -> Result<i32> {
+    let search = catalog::SearchOptions {
+        query: options.query.clone(),
+        kind: options.kind,
+        has_scripts: options.has_scripts,
+        limit: options.limit,
+    };
+    let hits = catalog::search_skills(&options.dir, &search)?;
+    if options.json {
+        write!(out, "{}", catalog::render_search_json(&hits)?)?;
+    } else {
+        write!(out, "{}", catalog::render_search_text(&hits))?;
+    }
+    out.flush()?;
+    Ok(if hits.is_empty() { 1 } else { 0 })
 }
 
 /// Run the `catalog check` command and return its exit status.
@@ -579,7 +764,7 @@ fn parse_kind(value: &str) -> Result<ArtifactKind> {
         "markdown" | "guidance" => Ok(ArtifactKind::Markdown),
         "rust_binary" => Ok(ArtifactKind::RustBinary),
         "python_uv" => Ok(ArtifactKind::PythonUv),
-        other => bail!("unknown skill kind `{}`", catalog::redact(other)),
+        other => usage(format!("unknown skill kind `{}`", catalog::redact(other))),
     }
 }
 
@@ -609,7 +794,10 @@ fn parse_output_format(value: &str) -> Result<OutputFormat> {
     match value {
         "text" => Ok(OutputFormat::Text),
         "json" => Ok(OutputFormat::Json),
-        other => bail!("unknown output format `{}`", catalog::redact(other)),
+        other => usage(format!(
+            "unknown output format `{}`",
+            catalog::redact(other)
+        )),
     }
 }
 
@@ -632,7 +820,7 @@ impl Cursor {
 
     fn next_required(&mut self, label: &str) -> Result<String> {
         self.next()
-            .ok_or_else(|| anyhow::anyhow!("missing {label}"))
+            .ok_or_else(|| usage_error(format!("missing {label}")))
     }
 }
 
@@ -649,6 +837,7 @@ fn print_usage() {
   skrun catalog index <dir> [--out <file>]
   skrun catalog registry <dir> [--registry <file>] [--write]
   skrun catalog check <dir> [--registry <file>] [--index <file>]
+  skrun catalog search <dir> <query>... [--kind folder|flat] [--has-scripts] [--limit N] [--json]
 "#
     );
 }
@@ -1200,6 +1389,46 @@ mod tests {
             ),
         );
         dir
+    }
+
+    #[test]
+    fn parses_catalog_search_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "--kind".to_string(),
+            "folder".to_string(),
+            "--has-scripts".to_string(),
+            "--limit".to_string(),
+            "5".to_string(),
+            "--json".to_string(),
+            "skills".to_string(),
+            "ai".to_string(),
+            "\u{6a21}\u{578b}".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Search(command)) = command else {
+            panic!("expected catalog search command");
+        };
+        assert_eq!(command.dir, PathBuf::from("skills"));
+        assert_eq!(command.query, "ai \u{6a21}\u{578b}");
+        assert_eq!(command.kind, Some(catalog::SkillKind::Folder));
+        assert!(command.has_scripts);
+        assert_eq!(command.limit, 5);
+        assert!(command.json);
+    }
+
+    #[test]
+    fn a_search_without_a_query_is_a_usage_error() {
+        let error = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "skills".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(error.is::<UsageError>(), "{error:?}");
     }
 
     #[test]

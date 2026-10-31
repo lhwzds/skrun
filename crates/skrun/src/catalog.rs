@@ -7,6 +7,7 @@
 //! - deterministic JSON catalog index
 //! - `SKILL_REGISTRY.md` reconciliation
 //! - catalog consistency checks
+//! - keyword search over the discovered skills
 //! - redaction of every printed value that looks like a secret
 //!
 //! ## Must Not
@@ -27,6 +28,7 @@
 //! - registry command exit status
 //! - registry table error
 //! - catalog check findings
+//! - catalog search results
 //!
 //! ## Depends On
 //! - serde_json
@@ -67,6 +69,20 @@ const FLAT_EXCLUDED: [&str; 5] = [
 
 /// Maximum length of a generated registry summary.
 const SUMMARY_LIMIT: usize = 160;
+
+/// The marks that end the first sentence of a text.
+///
+/// Every mark holds the bytes that stay with the sentence: a full stop and a
+/// Chinese full stop end the sentence before themselves, a question mark and
+/// an exclamation mark stay with the sentence.
+const SENTENCE_ENDS: [(&str, usize); 6] = [
+    (". ", 0),
+    ("。", 0),
+    ("? ", 1),
+    ("! ", 1),
+    ("？", "？".len()),
+    ("！", "！".len()),
+];
 
 /// Exact line that opens and closes a frontmatter block.
 const FRONTMATTER_DELIMITER: &str = "---";
@@ -693,6 +709,365 @@ pub fn check_catalog(
     })
 }
 
+/// Default number of search results.
+pub const SEARCH_LIMIT: usize = 10;
+
+/// Maximum length of the description sentence that a search result shows.
+const SEARCH_SUMMARY_LIMIT: usize = 120;
+
+/// The weight of the skill id in a search score.
+const SEARCH_WEIGHT_ID: u32 = 5;
+
+/// The weight of the frontmatter name in a search score.
+const SEARCH_WEIGHT_NAME: u32 = 4;
+
+/// The weight of the registry title in a search score.
+const SEARCH_WEIGHT_TITLE: u32 = 4;
+
+/// The weight of the registry summary in a search score.
+const SEARCH_WEIGHT_SUMMARY: u32 = 3;
+
+/// The weight of the frontmatter description in a search score.
+const SEARCH_WEIGHT_DESCRIPTION: u32 = 3;
+
+/// The weight of a frontmatter tag in a search score.
+const SEARCH_WEIGHT_TAG: u32 = 3;
+
+/// The weight of the entrypoint body in a search score.
+const SEARCH_WEIGHT_BODY: u32 = 1;
+
+/// Options of a catalog search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// The raw query; every whitespace separated term has to match.
+    pub query: String,
+    /// The kind of skill to keep; every kind when it is `None`.
+    pub kind: Option<SkillKind>,
+    /// Whether only the skills with at least one script are kept.
+    pub has_scripts: bool,
+    /// The number of results to keep.
+    pub limit: usize,
+}
+
+impl SearchOptions {
+    /// The options of a search for `query` without any filter.
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            kind: None,
+            has_scripts: false,
+            limit: SEARCH_LIMIT,
+        }
+    }
+}
+
+/// One skill that matches a search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchHit {
+    /// The id of the skill.
+    pub id: String,
+    /// How the skill is stored inside the skills directory.
+    pub kind: SkillKind,
+    /// The entrypoint path relative to the skills directory.
+    pub entrypoint: String,
+    /// The score of the match; a higher score is a better match.
+    pub score: u32,
+    /// The title of the skill; the registry title, else the frontmatter name.
+    pub title: Option<String>,
+    /// The summary of the skill; the registry summary, else the first
+    /// sentence of the description. A summary that holds a secret is
+    /// redacted, so a secret is never printed in part.
+    pub summary: Option<String>,
+}
+
+/// Search the skills of `dir` for the terms of `options`.
+///
+/// Every term of the query has to occur in at least one field of a skill, so
+/// the terms narrow the result down together. A term that occurs in several
+/// fields adds the weight of every field, so a skill that matches on its id
+/// outranks a skill that only mentions the term in its body.
+///
+/// The result is sorted by score and then by id, so the same directory always
+/// gives the same result.
+pub fn search_skills(dir: &Path, options: &SearchOptions) -> Result<Vec<SearchHit>> {
+    let terms = search_terms(&options.query);
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let skills = discover_skills(dir)?;
+    let rows = read_registry_rows(dir)?;
+
+    let mut hits = Vec::new();
+    for skill in &skills {
+        if let Some(kind) = options.kind
+            && skill.kind != kind
+        {
+            continue;
+        }
+        if options.has_scripts && !skill_has_scripts(dir, skill)? {
+            continue;
+        }
+
+        let entrypoint = path_to_string(&skill.entrypoint);
+        let row = rows.get(&entrypoint);
+        let fields = search_fields(dir, skill, row);
+        let Some(score) = score_fields(&fields, &terms) else {
+            continue;
+        };
+
+        let title = row
+            .map(|row| row.title.clone())
+            .filter(|title| !title.is_empty())
+            .or_else(|| skill.frontmatter.name.clone());
+        // The summary goes through the redaction helper before it is cut and
+        // truncated, so a secret that crosses the cut is never printed in
+        // part.
+        let summary = row
+            .map(|row| row.summary.clone())
+            .filter(|summary| !summary.is_empty())
+            .or_else(|| {
+                skill
+                    .frontmatter
+                    .description
+                    .as_deref()
+                    .map(|description| first_sentence(description, SEARCH_SUMMARY_LIMIT))
+                    .filter(|sentence| !sentence.is_empty())
+            })
+            .map(|summary| redact(&summary));
+
+        hits.push(SearchHit {
+            id: skill.id.clone(),
+            kind: skill.kind,
+            entrypoint,
+            score,
+            title,
+            summary,
+        });
+    }
+
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    hits.truncate(options.limit);
+    Ok(hits)
+}
+
+/// Render the search hits as text.
+///
+/// Every printed value goes through the redaction helper, so a value that
+/// looks like a secret never reaches the output.
+pub fn render_search_text(hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return "no skills match\n".to_string();
+    }
+
+    let mut out = String::new();
+    for hit in hits {
+        let label = hit.title.clone().unwrap_or_else(|| hit.id.clone());
+        out.push_str(&format!(
+            "{}  {}  {}  {}\n",
+            redact(&hit.id),
+            kind_name(hit.kind),
+            redact(&hit.entrypoint),
+            redact(&label)
+        ));
+        if let Some(summary) = &hit.summary {
+            out.push_str(&format!("  {}\n", redact(summary)));
+        }
+    }
+    out
+}
+
+/// Render the search hits as JSON.
+///
+/// The values go through the same redaction helper as the text output.
+pub fn render_search_json(hits: &[SearchHit]) -> Result<String> {
+    let redacted: Vec<SearchHit> = hits.iter().map(redacted_hit).collect();
+    let mut text = serde_json::to_string_pretty(&redacted)?;
+    text.push('\n');
+    Ok(text)
+}
+
+/// The terms of a search query.
+///
+/// The query is split on whitespace and every term is lowercased, so the
+/// match is case insensitive. The lowercasing is Unicode aware, so a Chinese
+/// term matches like an English one and no word segmentation is needed.
+fn search_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|term| term.to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+/// The fields of a skill that a search term can match.
+///
+/// Every field is lowercased once, so the terms only have to be lowercased
+/// once as well.
+fn search_fields(dir: &Path, skill: &Skill, row: Option<&RegistryRow>) -> Vec<(String, u32)> {
+    let mut fields: Vec<(String, u32)> = Vec::new();
+    fields.push((skill.id.to_lowercase(), SEARCH_WEIGHT_ID));
+    if let Some(name) = &skill.frontmatter.name {
+        fields.push((name.to_lowercase(), SEARCH_WEIGHT_NAME));
+    }
+    if let Some(row) = row {
+        fields.push((row.title.to_lowercase(), SEARCH_WEIGHT_TITLE));
+        fields.push((row.summary.to_lowercase(), SEARCH_WEIGHT_SUMMARY));
+    }
+    if let Some(description) = &skill.frontmatter.description {
+        fields.push((description.to_lowercase(), SEARCH_WEIGHT_DESCRIPTION));
+    }
+    for tag in &skill.frontmatter.tags {
+        fields.push((tag.to_lowercase(), SEARCH_WEIGHT_TAG));
+    }
+    let body = fs::read_to_string(dir.join(&skill.entrypoint)).unwrap_or_default();
+    fields.push((body.to_lowercase(), SEARCH_WEIGHT_BODY));
+    fields
+}
+
+/// The score of a skill, when every term matches one of its fields.
+///
+/// The score is the sum of the weight of every field that holds a term, so a
+/// term that occurs in the id and in the title counts for both.
+fn score_fields(fields: &[(String, u32)], terms: &[String]) -> Option<u32> {
+    let mut score = 0;
+    for term in terms {
+        let mut matched = false;
+        for (text, weight) in fields {
+            if text.contains(term.as_str()) {
+                score += weight;
+                matched = true;
+            }
+        }
+        if !matched {
+            return None;
+        }
+    }
+    Some(score)
+}
+
+/// A row of the registry table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegistryRow {
+    /// The title of the skill; the first cell of the row.
+    title: String,
+    /// The summary of the skill; the second cell of the row.
+    summary: String,
+}
+
+/// The rows of the registry table of `dir`, keyed by their entrypoint.
+///
+/// The rows are only read when the registry file exists and holds the
+/// registry table; a missing file or a file without the table gives no row.
+fn read_registry_rows(dir: &Path) -> Result<BTreeMap<String, RegistryRow>> {
+    let mut rows = BTreeMap::new();
+    let registry = dir.join(REGISTRY_FILE);
+    if !registry.exists() {
+        return Ok(rows);
+    }
+    let content = read_registry(&registry)?;
+    let document = RegistryDocument::parse(&content);
+    let Some((_, start, end)) = document.table() else {
+        return Ok(rows);
+    };
+
+    for line in &document.lines[start..end] {
+        let cells = parse_cells(&line.text);
+        let (Some(title), Some(summary), Some(entrypoint)) =
+            (cells.first(), cells.get(1), cells.get(2))
+        else {
+            continue;
+        };
+        let Some(raw) = extract_link_path(entrypoint) else {
+            continue;
+        };
+        let key = path_to_string(&normalize_relative(Path::new(&raw)));
+        rows.entry(key).or_insert_with(|| RegistryRow {
+            title: cell_label(title),
+            summary: summary.clone(),
+        });
+    }
+    Ok(rows)
+}
+
+/// The label of a registry cell.
+///
+/// A cell that holds a markdown link shows the label of the link, so the
+/// title of a row reads as the name of the skill.
+fn cell_label(cell: &str) -> String {
+    let trimmed = cell.trim();
+    if let Some(end) = trimmed.find("](")
+        && trimmed.starts_with('[')
+    {
+        return trimmed[1..end].trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+/// The first sentence of a text, at most `limit` characters long.
+///
+/// The text goes through the redaction helper before the sentence is cut out,
+/// so a secret that crosses the cut is never printed in part.
+///
+/// The sentence ends at the first full stop, at the first question mark, at
+/// the first exclamation mark, at the first Chinese full stop, at the first
+/// Chinese question mark, at the first Chinese exclamation mark or at the
+/// first line break; the earliest of them ends the sentence.
+fn first_sentence(text: &str, limit: usize) -> String {
+    let redacted = redact(text);
+    let mut cut = redacted.len();
+    for (mark, keep) in SENTENCE_ENDS {
+        if let Some(position) = redacted.find(mark) {
+            cut = cut.min(position + keep);
+        }
+    }
+    if let Some(position) = redacted.find('\n') {
+        cut = cut.min(position);
+    }
+    let sentence = redacted.get(..cut).unwrap_or(redacted.as_str()).trim();
+    if sentence.chars().count() > limit {
+        sentence.chars().take(limit).collect()
+    } else {
+        sentence.to_string()
+    }
+}
+
+/// Whether a skill holds at least one script.
+///
+/// The scripts are found the same way the catalog index finds them, so a
+/// skill with a script is the same skill in both commands.
+fn skill_has_scripts(dir: &Path, skill: &Skill) -> Result<bool> {
+    match skill.kind {
+        SkillKind::Folder => Ok(!collect_scripts(dir, skill)?.is_empty()),
+        SkillKind::Flat => Ok(false),
+    }
+}
+
+/// A search hit with every value that goes through the redaction helper.
+fn redacted_hit(hit: &SearchHit) -> SearchHit {
+    SearchHit {
+        id: redact(&hit.id),
+        kind: hit.kind,
+        entrypoint: redact(&hit.entrypoint),
+        score: hit.score,
+        title: hit.title.as_deref().map(redact),
+        summary: hit.summary.as_deref().map(redact),
+    }
+}
+
+/// The name of a skill kind, as it is printed.
+fn kind_name(kind: SkillKind) -> &'static str {
+    match kind {
+        SkillKind::Folder => "folder",
+        SkillKind::Flat => "flat",
+    }
+}
+
 /// Parse the optional frontmatter block of a skill entrypoint.
 ///
 /// The block only counts when its first line is exactly `---` and a later
@@ -983,25 +1358,15 @@ fn escape_cell(text: &str) -> String {
     text.replace('\\', "\\\\").replace('|', "\\|")
 }
 
+/// The summary of a registry row: the first sentence of the description.
+///
+/// The description goes through the redaction helper before the sentence is
+/// cut out, so a secret that crosses the cut is never written to the table.
 fn summary_of(description: Option<&str>) -> String {
     let Some(text) = description else {
         return "(no description)".to_string();
     };
-    let mut cut = text.len();
-    if let Some(position) = text.find(". ") {
-        cut = cut.min(position);
-    }
-    if let Some(position) = text.find('。') {
-        cut = cut.min(position);
-    }
-    if let Some(position) = text.find('\n') {
-        cut = cut.min(position);
-    }
-    let mut summary = text[..cut].trim().to_string();
-    if summary.chars().count() > SUMMARY_LIMIT {
-        summary = summary.chars().take(SUMMARY_LIMIT).collect();
-    }
-    let summary = escape_cell(&summary);
+    let summary = escape_cell(&first_sentence(text, SUMMARY_LIMIT));
     if summary.is_empty() {
         "(no description)".to_string()
     } else {
@@ -2964,6 +3329,310 @@ mod tests {
         assert!(!report.out_of_sync());
         assert_eq!(report.exit_code(false), 0);
         assert_eq!(report.kept, vec!["demo(v2)/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn search_finds_a_skill_by_a_chinese_term() {
+        let dir = search_fixture("search-chinese");
+        let hits = search_skills(&dir, &SearchOptions::new("模型")).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "ai-tools");
+        assert_eq!(hits[0].kind, SkillKind::Folder);
+        assert_eq!(hits[0].entrypoint, "ai-tools/SKILL.md");
+        assert_eq!(hits[0].title.as_deref(), Some("AI Tools"));
+        assert_eq!(hits[0].summary.as_deref(), Some("When you need a model"));
+        // The description holds the term and the body holds the description.
+        assert_eq!(hits[0].score, 3 + 1);
+    }
+
+    #[test]
+    fn search_finds_a_flat_skill_by_its_body() {
+        let dir = search_fixture("search-body");
+        let hits = search_skills(&dir, &SearchOptions::new("rsync")).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "deploy-guide");
+        assert_eq!(hits[0].kind, SkillKind::Flat);
+        assert_eq!(hits[0].entrypoint, "deploy-guide.md");
+        // The body of the skill is the only field that holds the term.
+        assert_eq!(hits[0].score, 1);
+    }
+
+    #[test]
+    fn search_needs_every_term() {
+        let dir = search_fixture("search-and");
+        let hits = search_skills(&dir, &SearchOptions::new("ai 模型")).unwrap();
+
+        // Both terms hold for the same skill, so the skill matches.
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "ai-tools");
+
+        // A term that holds for no skill at all matches nothing.
+        let hits = search_skills(&dir, &SearchOptions::new("ai nothing-matches")).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_ranks_an_id_match_above_a_body_match() {
+        let dir = search_fixture("search-rank");
+        let hits = search_skills(&dir, &SearchOptions::new("guide")).unwrap();
+
+        assert_eq!(hits.len(), 2);
+        // The id of the flat skill holds the term, the body of the folder
+        // skill only mentions it.
+        assert_eq!(hits[0].id, "deploy-guide");
+        assert_eq!(hits[1].id, "secrets");
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn search_filters_by_kind_and_by_scripts() {
+        let dir = search_fixture("search-filters");
+
+        let mut options = SearchOptions::new("guide");
+        options.kind = Some(SkillKind::Flat);
+        let hits = search_skills(&dir, &options).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "deploy-guide");
+
+        let mut options = SearchOptions::new("guide");
+        options.has_scripts = true;
+        let hits = search_skills(&dir, &options).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "secrets");
+    }
+
+    #[test]
+    fn search_keeps_the_limit() {
+        let dir = search_fixture("search-limit");
+        let mut options = SearchOptions::new("guide");
+        options.limit = 1;
+        let hits = search_skills(&dir, &options).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "deploy-guide");
+    }
+
+    #[test]
+    fn search_renders_the_json_shape() {
+        let dir = search_fixture("search-json");
+        let hits = search_skills(&dir, &SearchOptions::new("模型")).unwrap();
+        let rendered = render_search_json(&hits).unwrap();
+
+        assert!(rendered.ends_with("]\n"), "{rendered}");
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        let entries = parsed.as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["id"], "ai-tools");
+        assert_eq!(entries[0]["kind"], "folder");
+        assert_eq!(entries[0]["entrypoint"], "ai-tools/SKILL.md");
+        assert_eq!(entries[0]["score"], 4);
+        assert_eq!(entries[0]["title"], "AI Tools");
+        assert_eq!(entries[0]["summary"], "When you need a model");
+    }
+
+    #[test]
+    fn search_json_holds_null_for_a_missing_title_and_summary() {
+        let dir = temp_dir("search-null");
+        write(&dir.join("bare.md"), "# Bare\n\nA bare skill.\n");
+
+        let hits = search_skills(&dir, &SearchOptions::new("bare")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, None);
+        assert_eq!(hits[0].summary, None);
+
+        let rendered = render_search_json(&hits).unwrap();
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert!(parsed[0]["title"].is_null());
+        assert!(parsed[0]["summary"].is_null());
+    }
+
+    #[test]
+    fn search_is_deterministic() {
+        let dir = search_fixture("search-deterministic");
+
+        let first = search_skills(&dir, &SearchOptions::new("guide")).unwrap();
+        let second = search_skills(&dir, &SearchOptions::new("guide")).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(render_search_text(&first), render_search_text(&second));
+        assert!(render_search_text(&first).starts_with("deploy-guide  flat  deploy-guide.md"));
+    }
+
+    #[test]
+    fn search_without_a_match_renders_the_empty_result() {
+        let dir = search_fixture("search-empty");
+        let hits = search_skills(&dir, &SearchOptions::new("nothing-matches")).unwrap();
+
+        assert!(hits.is_empty());
+        assert_eq!(render_search_text(&hits), "no skills match\n");
+        assert_eq!(render_search_json(&hits).unwrap(), "[]\n");
+    }
+
+    #[test]
+    fn search_without_a_registry_table_uses_the_frontmatter() {
+        let dir = temp_dir("search-no-table");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        write(
+            &dir.join(REGISTRY_FILE),
+            "# Skills\n\nThe registry table is missing.\n",
+        );
+
+        let hits = search_skills(&dir, &SearchOptions::new("demo")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title.as_deref(), Some("Demo"));
+        assert_eq!(hits[0].summary.as_deref(), Some("A demo skill."));
+    }
+
+    #[test]
+    fn search_hides_a_secret_in_a_description() {
+        let dir = temp_dir("search-secret");
+        write(
+            &dir.join("demo/SKILL.md"),
+            concat!(
+                "---\n",
+                "name: Demo\n",
+                "description: Uses AKIAIOSFODNN7EXAMPLE to sign the request.\n",
+                "---\n",
+                "\n",
+                "# Demo\n",
+            ),
+        );
+
+        let hits = search_skills(&dir, &SearchOptions::new("sign")).unwrap();
+        assert_eq!(hits.len(), 1);
+
+        let text = render_search_text(&hits);
+        assert!(!text.contains("AKIAIOSFODNN7EXAMPLE"), "{text}");
+        assert!(text.contains("<redacted>"), "{text}");
+
+        let json = render_search_json(&hits).unwrap();
+        assert!(!json.contains("AKIAIOSFODNN7EXAMPLE"), "{json}");
+        assert!(json.contains("<redacted>"), "{json}");
+    }
+
+    #[test]
+    fn search_hides_a_secret_that_crosses_the_cut_of_a_description() {
+        let dir = temp_dir("search-secret-cut");
+        // The key starts at the 110th character of the description, so the
+        // cut of the summary would end inside the key.
+        let description = format!("{} {SECRET}", "a".repeat(109));
+        write(
+            &dir.join("demo/SKILL.md"),
+            &format!("---\nname: Demo\ndescription: {description}\n---\n\n# Demo\n"),
+        );
+
+        let hits = search_skills(&dir, &SearchOptions::new("demo")).unwrap();
+        assert_eq!(hits.len(), 1);
+
+        let summary = hits[0].summary.as_deref().expect("summary");
+        assert!(!summary.contains(SECRET), "{summary}");
+        assert!(!holds_piece_of(summary, SECRET), "{summary}");
+
+        let text = render_search_text(&hits);
+        assert!(!text.contains(SECRET), "{text}");
+        assert!(!holds_piece_of(&text, SECRET), "{text}");
+        assert!(text.contains("<redacted>"), "{text}");
+
+        let json = render_search_json(&hits).unwrap();
+        assert!(!json.contains(SECRET), "{json}");
+        assert!(!holds_piece_of(&json, SECRET), "{json}");
+        assert!(json.contains("<redacted>"), "{json}");
+    }
+
+    #[test]
+    fn first_sentence_ends_at_the_earliest_terminator() {
+        assert_eq!(first_sentence("Ready? Run this next.", 120), "Ready?");
+        assert_eq!(first_sentence("Ready! Run this next.", 120), "Ready!");
+        assert_eq!(first_sentence("准备好了！继续使用。", 120), "准备好了！");
+        assert_eq!(first_sentence("准备好了？继续使用。", 120), "准备好了？");
+        assert_eq!(
+            first_sentence("First sentence. Second sentence.", 120),
+            "First sentence"
+        );
+        assert_eq!(first_sentence("准备好了。继续使用。", 120), "准备好了");
+        assert_eq!(first_sentence("First line\nSecond line", 120), "First line");
+    }
+
+    #[test]
+    fn a_registry_row_never_holds_a_part_of_a_secret() {
+        let dir = temp_dir("registry-secret-cut");
+        let description = format!("{} {SECRET}", "a".repeat(109));
+        write(
+            &dir.join("demo/SKILL.md"),
+            &format!("---\nname: Demo\ndescription: {description}\n---\n\n# Demo\n"),
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            "# Skills\n\n| Skill | When to read | Entrypoint |\n| --- | --- | --- |\n",
+        );
+
+        reconcile_registry(&dir, &registry, true).unwrap();
+
+        let after = fs::read_to_string(&registry).unwrap();
+        assert!(!after.contains(SECRET), "{after}");
+        assert!(!holds_piece_of(&after, SECRET), "{after}");
+    }
+
+    /// Whether the text holds a piece of eight characters of the secret.
+    fn holds_piece_of(text: &str, secret: &str) -> bool {
+        secret
+            .as_bytes()
+            .windows(8)
+            .any(|piece| text.contains(std::str::from_utf8(piece).unwrap()))
+    }
+
+    /// A skills directory with a Chinese skill, a skill with a script, a flat
+    /// skill and a registry with titles.
+    fn search_fixture(name: &str) -> PathBuf {
+        let root = temp_dir(name);
+        write(
+            &root.join("ai-tools/SKILL.md"),
+            concat!(
+                "---\n",
+                "name: AI Tools\n",
+                "description: 大模型工具箱，帮助选择模型。More text here.\n",
+                "tags: [ai, model]\n",
+                "---\n",
+                "\n",
+                "# AI Tools\n",
+                "\n",
+                "Use this skill to pick a model.\n",
+            ),
+        );
+        write(
+            &root.join("secrets/SKILL.md"),
+            concat!(
+                "---\n",
+                "name: Secrets\n",
+                "description: Keeps credentials safe.\n",
+                "---\n",
+                "\n",
+                "# Secrets\n",
+                "\n",
+                "Follow the deploy guide to keep credentials safe.\n",
+            ),
+        );
+        write(&root.join("secrets/scripts/tool.py"), "print(\"hello\")\n");
+        write(
+            &root.join("deploy-guide.md"),
+            "# Deploy guide\n\nCopy files with rsync to the host.\n",
+        );
+        write(
+            &root.join(REGISTRY_FILE),
+            concat!(
+                "| Skill | When to read | Entrypoint |\n",
+                "| --- | --- | --- |\n",
+                "| AI Tools | When you need a model | [ai-tools](ai-tools/SKILL.md) |\n",
+                "| Secrets | When you handle keys | [secrets](secrets/SKILL.md) |\n",
+                "| Deploy Guide | When you deploy | [deploy-guide](deploy-guide.md) |\n",
+            ),
+        );
+        root
     }
 
     /// The text of a line without the markers that may precede a fence.
