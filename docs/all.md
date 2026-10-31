@@ -182,9 +182,9 @@ Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<
 
 `check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a missing or drifted registry table, a stale `skills.json`, and a line holding a secret. Its one warning: a frontmatter `name` differing from the directory name.
 
-Secrets are private-key blocks and tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`. `check`, `registry` and `search` print matching user text as `<redacted>` (`redact`); a secret finding gives only `path:line`. `skills.json` keeps real paths ([How It Works](#how-it-works)).
+Secrets are private-key blocks, tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`, and generic assignments such as `password: …` ([Store and Risk Tiers](#store)). `check`, `registry` and `search` print matching user text as `<redacted>` (`redact`); a secret finding gives only `path:line`. `skills.json` keeps real paths ([How It Works](#how-it-works)).
 
-<sub>Sources: [main.rs:173-211](../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:63-69](../crates/skrun/src/catalog.rs#L63-L69) · [catalog.rs:370-417](../crates/skrun/src/catalog.rs#L370-L417) · +6</sub>
+<sub>Sources: [main.rs:173-211](../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:66-72](../crates/skrun/src/catalog.rs#L66-L72) · [catalog.rs:373-420](../crates/skrun/src/catalog.rs#L373-L420) · +6</sub>
 
 ### Environment and default paths
 
@@ -334,19 +334,19 @@ Both build steps capture output and report only stderr on failure. `markdown` sk
 
 `reconcile_registry` edits only the `| Skill | When to read | Entrypoint |` table of the curated `SKILL_REGISTRY.md`, outside fenced code (backtick or `~~~`, closed only in the opening container: top level, list item or quote; a backticked info string means inline code). Valid rows stay verbatim and ordered; rows with a missing, non-skill or repeated entrypoint go; unlisted skills get `| name | summary | [id](entrypoint) |` (description's first sentence, ≤160 characters). Cells honour `\|` and `\\`; paths with parentheses, spaces, `<` or `>` use `[id](<path>)`. Separators, other lines and endings stay; with no table it fails unwritten. Known gaps: ordered-list fences closed at 4+ spaces stay open (`registry` then finds no table), reversed list/quote nesting may close one early, `>` paths don't round-trip.
 
-<sub>Sources: [catalog.rs:14-18](../crates/skrun/src/catalog.rs#L14-L18) · [catalog.rs:420-452](../crates/skrun/src/catalog.rs#L420-L452) · [catalog.rs:481-585](../crates/skrun/src/catalog.rs#L481-L585) · [catalog.rs:2039-2082](../crates/skrun/src/catalog.rs#L2039-L2082) · [catalog.rs:1332-1365](../crates/skrun/src/catalog.rs#L1332-L1365) · +6</sub>
+<sub>Sources: [catalog.rs:14-18](../crates/skrun/src/catalog.rs#L14-L18) · [catalog.rs:423-455](../crates/skrun/src/catalog.rs#L423-L455) · [catalog.rs:484-588](../crates/skrun/src/catalog.rs#L484-L588) · [catalog.rs:3592-3635](../crates/skrun/src/catalog.rs#L3592-L3635) · [catalog.rs:1335-1379](../crates/skrun/src/catalog.rs#L1335-L1379) · +6</sub>
 
 ### How search ranks
 
 `search_skills` lowercases each whitespace-separated term and matches it as a substring, so Chinese needs no segmentation. Every term must hit a field (AND) and adds the weight of each field it hits: id 5, frontmatter name 4, registry title 4, registry summary, description and each tag 3, entrypoint body 1. Results sort by score, then id; `--has-scripts` drops flat skills. A result shows the registry title (else the name) and the registry summary (else the description's first sentence: up to `. `, `? `, `! `, `。`, `？`, `！` or a newline, ≤120 characters), redacted before the cut so a secret never prints in part.
 
-<sub>Sources: [catalog.rs:714-738](../crates/skrun/src/catalog.rs#L714-L738) · [catalog.rs:785-861](../crates/skrun/src/catalog.rs#L785-L861) · [catalog.rs:901-955](../crates/skrun/src/catalog.rs#L901-L955) · [catalog.rs:1013-1051](../crates/skrun/src/catalog.rs#L1013-L1051) · [catalog.rs:75-87](../crates/skrun/src/catalog.rs#L75-L87)</sub>
+<sub>Sources: [catalog.rs:717-741](../crates/skrun/src/catalog.rs#L717-L741) · [catalog.rs:788-864](../crates/skrun/src/catalog.rs#L788-L864) · [catalog.rs:904-958](../crates/skrun/src/catalog.rs#L904-L958) · [catalog.rs:1016-1054](../crates/skrun/src/catalog.rs#L1016-L1054) · [catalog.rs:78-90](../crates/skrun/src/catalog.rs#L78-L90)</sub>
 
 <a id="store"></a>
 
 ## Store and Risk Tiers
 
-`skrun catalog add` copies a skill from elsewhere (another repository, a downloaded zip) into a local store, and `inspect` shows what arrived. Neither executes, builds or imports anything from the skill, and neither reaches the network: the store is where you look at a skill before deciding to install it ([How It Works](#how-it-works)).
+`skrun catalog add` copies a skill from elsewhere (another repository, a downloaded zip) into a local store; `inspect` shows what arrived. Neither executes, builds or imports anything from the skill, nor reaches the network: the store is where you look before installing ([How It Works](#how-it-works)).
 
 ```bash
 skrun catalog add <dir|zip> [--store <dir>] [--id <id>] [--from <provenance>] [--json]
@@ -354,9 +354,9 @@ skrun catalog inspect <id> [--store <dir>] [--json]
 skrun catalog inspect --list [--store <dir>] [--json]
 ```
 
-`add` prints `stored`, `already stored` or `already stored (record refreshed)` with the id, version hash, file and finding counts and the tier; `--json` prints the version record. `inspect` prints each version with its provenance, scripts, findings by severity and tier reasons; `--list` prints one line per id for its newest version (`--json` works there too, though the usage text omits it). Inspecting an id that was never added fails. Every printed string goes through `redact`, also for a record edited by hand.
+`add` prints `stored`, `already stored` or `already stored (record refreshed)` with id, version hash, file and finding counts and tier; `--json` prints the version record. `inspect` prints each version's provenance, scripts, findings by severity and tier reasons; `--list` prints each id's newest version on one line. Every printed string goes through `redact`, even from a hand-edited record.
 
-<sub>Sources: [main.rs:676-771](../crates/skrun/src/main.rs#L676-L771) · [main.rs:858-923](../crates/skrun/src/main.rs#L858-L923) · [store.rs:594-726](../crates/skrun/src/store.rs#L594-L726) · [store.rs:531-583](../crates/skrun/src/store.rs#L531-L583)</sub>
+<sub>Sources: [main.rs:676-771](../crates/skrun/src/main.rs#L676-L771) · [main.rs:858-923](../crates/skrun/src/main.rs#L858-L923) · [store.rs:646-785](../crates/skrun/src/store.rs#L646-L785) · [store.rs:583-635](../crates/skrun/src/store.rs#L583-L635)</sub>
 
 ### What add stores
 
@@ -367,61 +367,80 @@ flowchart LR
   scan --> rec["records/id.json"]
 ```
 
-The store root is `--store`, else `$SKRUN_STORE`, else `~/.skrun/store`. The id is `--id`, else the source's own name (the directory name or the zip file stem, taken from the real path, so `add .` works), else the frontmatter `name` with YAML quotes stripped when the source name is not a valid id ([Reference](#reference)). Preferring the source name keeps two authors' skills with the same `name` apart.
+The id is `--id`, else the source's own name (directory name or zip stem, from the real path, so `add .` works), else the frontmatter `name` without YAML quotes when the source name is not a valid id ([Reference](#reference)). So two authors' same-named skills stay apart.
 
-The content hash covers every file's path and bytes; a short prefix names the version directory, which is built beside its place and renamed in, so a version never appears half written. `records/<id>.json` lists every version: hash, `--from`, time, file and byte counts, frontmatter name and description, scripts with language and Python imports, findings, tier and reasons. It is written to a temporary file and renamed, under the per-id lock. Adding identical content stores nothing new; only a scan that now differs refreshes that version's scripts, findings and tier.
+`records/<id>.json` lists each version: hash, `--from`, time, file and byte counts, frontmatter name and description, scripts with language and imports, findings, tier and reasons. It is written to a temporary file and renamed under the per-id lock. Identical content stores nothing new; a scan that now differs refreshes that version's scripts, findings and tier.
 
-<sub>Sources: [store.rs:300-321](../crates/skrun/src/store.rs#L300-L321) · [store.rs:323-487](../crates/skrun/src/store.rs#L323-L487) · [store.rs:489-520](../crates/skrun/src/store.rs#L489-L520) · [store.rs:746-825](../crates/skrun/src/store.rs#L746-L825) · [store.rs:1092-1114](../crates/skrun/src/store.rs#L1092-L1114) · +3</sub>
+<sub>Sources: [store.rs:363-539](../crates/skrun/src/store.rs#L363-L539) · [store.rs:805-895](../crates/skrun/src/store.rs#L805-L895) · [store.rs:2037-2097](../crates/skrun/src/store.rs#L2037-L2097) · [catalog.rs:1208-1233](../crates/skrun/src/catalog.rs#L1208-L1233)</sub>
+
+### Version hashes and file modes
+
+`content_hash` feeds sha256, per file in path order, the path length as a big-endian u64, the path, the content length, then the content, so different file sets never share a hash. Its first 16 hex characters name the version directory; if that directory holds other content, `version_name` uses 32, then 64, so different content is never taken as already stored.
+
+A version is copied beside its place and renamed in, never half written. Store directories are `0700`, stored files `0400` and their directories `0500`, records `0600`.
+
+<sub>Sources: [store.rs:82-107](../crates/skrun/src/store.rs#L82-L107) · [store.rs:541-572](../crates/skrun/src/store.rs#L541-L572) · [store.rs:828-837](../crates/skrun/src/store.rs#L828-L837) · [store.rs:1264-1328](../crates/skrun/src/store.rs#L1264-L1328) · [store.rs:1856-1886](../crates/skrun/src/store.rs#L1856-L1886)</sub>
 
 ### What add refuses
 
-The source is staged in a fresh temporary directory before anything else, and a refused source never reaches the store. `add` fails on:
+The source is staged in a fresh temporary directory first; a refused source never reaches the store. `add` fails on:
 
-- a source that is itself a symlink. Symlinks inside a directory are never followed or copied; each becomes a `symlink` finding instead;
+- a source that is itself a symlink. Symlinks inside a directory are never followed or copied; each becomes a `symlink` finding;
 - a source, file or zip entry name that is not UTF-8;
-- a zip entry with an absolute path or a path that leaves the archive root, a symlink entry, more than 5,000 entries, more than 50 MB uncompressed, or an entry compressed more than 100 times;
+- a zip entry with an absolute path or one leaving the archive root, a symlink entry, more than 5,000 entries, more than 50 MB uncompressed, or an entry compressed over 100 times, counted on the bytes actually written, not just declared sizes;
 - no `SKILL.md` at the top level or inside a single top-level folder (so a zip of a repository folder works);
-- an id that fails the id rules, or another `add` holding the same id's lock for 10 seconds.
+- an invalid id, or another `add` holding the id's lock for 10 seconds.
 
-A directory copy skips `.git`, `.venv`, `__pycache__`, `node_modules` and `target` folders, so they are neither stored nor hashed.
+Directory copies skip `.git`, `.venv`, `__pycache__`, `node_modules` and `target`.
 
-<sub>Sources: [store.rs:59-87](../crates/skrun/src/store.rs#L59-L87) · [store.rs:827-849](../crates/skrun/src/store.rs#L827-L849) · [store.rs:870-955](../crates/skrun/src/store.rs#L870-L955) · [store.rs:957-1090](../crates/skrun/src/store.rs#L957-L1090) · [store.rs:1566-1584](../crates/skrun/src/store.rs#L1566-L1584)</sub>
+<sub>Sources: [store.rs:73-116](../crates/skrun/src/store.rs#L73-L116) · [store.rs:897-919](../crates/skrun/src/store.rs#L897-L919) · [store.rs:940-1025](../crates/skrun/src/store.rs#L940-L1025) · [store.rs:1027-1262](../crates/skrun/src/store.rs#L1027-L1262) · [store.rs:1952-1970](../crates/skrun/src/store.rs#L1952-L1970)</sub>
 
 ### Risk rules
 
-`scan_skill` reads every stored file as lossy UTF-8 text; each rule reports its first match per file as `path:line`. Binary and very large files skip the pattern rules, not the secret check.
+`scan_skill` reads each file as lossy UTF-8; a rule reports its first match per file as `path:line`. Binary files and files over 16 MB (`MAX_SCAN_BYTES`) skip these rules, not the secret check.
 
 | severity | rule | finds |
 |---|---|---|
 | high | `remote_exec` | curl or wget piped into a shell or Python; `iex`, `Invoke-Expression`, `DownloadString` |
-| high | `decode_exec` | a decode call (`b64decode`, `fromhex`, `atob`, `Buffer.from` with base64, …) followed within 160 characters by exec, eval, compile or sh |
-| high | `reverse_shell`, `cred_theft`, `exfil_endpoint`, `persistence`, `av_evasion` | /dev/tcp and nc -e; SSH keys, AWS credentials, Keychain, browser cookies, named wallets; webhook or paste services and URLs to public IPv4 hosts; cron, LaunchAgents, shell rc files; quarantine, Gatekeeper, SIP or Defender bypass |
+| high | `decode_exec` | a decode call (`b64decode`, `fromhex`, `atob`, base64 `Buffer.from`, …) within 160 characters before exec, eval, compile or sh |
+| high | `reverse_shell`, `cred_theft`, `exfil_endpoint`, `persistence`, `av_evasion` | /dev/tcp, nc -e; SSH keys, AWS credentials, Keychain, browser cookies, wallets; webhook or paste services, public IPv4 URLs; cron, LaunchAgents, shell rc files; quarantine, Gatekeeper, SIP or Defender bypass |
 | high | `binary` | a binary extension or magic number (ELF, Mach-O, PE) |
-| medium | `obfuscation` | long base64 or hex-escape runs, many `_0x` identifiers |
-| medium | `social_engineering` | Markdown and text files only: copy/paste into a terminal, password-protected archives |
-| medium | `secret`, `symlink`, `shadows_stdlib` | the secret patterns of [Reference](#reference); a skipped symlink; a Python file or package named after a risky module (below) |
+| medium | `obfuscation`, `social_engineering` | long base64 or hex-escape runs, many `_0x` identifiers; in Markdown and text, paste-into-terminal or password-protected archive lures |
+| medium | `secret`, `symlink`, `unscanned`, `unparsed`, `shadows_stdlib` | a secret; a skipped symlink; a file over 16 MB; untokenisable Python; a `.py`, extensionless file or Python folder named after a stdlib module beside or above a script |
 
-Known gap: in JavaScript, a comment inside the `Buffer.from(...)` arguments hides a `decode_exec`.
+Known gap: a JavaScript comment in `Buffer.from(...)` arguments hides a `decode_exec`.
 
-<sub>Sources: [risk.rs:377-480](../crates/skrun/src/risk.rs#L377-L480) · [risk.rs:492-550](../crates/skrun/src/risk.rs#L492-L550) · [risk.rs:616-685](../crates/skrun/src/risk.rs#L616-L685) · [risk.rs:722-805](../crates/skrun/src/risk.rs#L722-L805) · [store.rs:1134-1218](../crates/skrun/src/store.rs#L1134-L1218) · +3</sub>
+<sub>Sources: [risk.rs:379-482](../crates/skrun/src/risk.rs#L379-L482) · [risk.rs:494-552](../crates/skrun/src/risk.rs#L494-L552) · [risk.rs:37-43](../crates/skrun/src/risk.rs#L37-L43) · [risk.rs:619-686](../crates/skrun/src/risk.rs#L619-L686) · [risk.rs:725-808](../crates/skrun/src/risk.rs#L725-L808) · +6</sub>
+
+### What counts as a secret
+
+Beyond the tokens of [Reference](#reference), `line_has_secret` flags an assignment (`=` or `:`, quoted keys too) whose key has `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`, `client_secret`, access or private key as a whole word (`x-api-key`, or last segment as in `POSTGRES_PASSWORD`; not `max_tokens`) and whose value looks real: six or more non-space characters, not a `$` or `%` variable, expression, type annotation or placeholder (`<token>`, `changeme`, `YOUR_KEY`, …). Findings give `path:line` only; `redact` prints such strings as `<redacted>`. Known gap: a YAML value starting with a placeholder word, then a real secret.
+
+<sub>Sources: [catalog.rs:2608-2683](../crates/skrun/src/catalog.rs#L2608-L2683) · [catalog.rs:2685-2763](../crates/skrun/src/catalog.rs#L2685-L2763) · [catalog.rs:2786-2890](../crates/skrun/src/catalog.rs#L2786-L2890) · [catalog.rs:2892-2928](../crates/skrun/src/catalog.rs#L2892-L2928) · [commit ae10cbf](https://github.com/lhwzds/skrun/commit/ae10cbf)</sub>
+
+### How scripts and imports are read
+
+A file is a script by extension (`.py`, `.sh`, `.js`/`.mjs`, `.ts`), else by a `#!` line: `sh`, `bash`, `zsh`, `dash` mean shell, `python*` Python, `node`, `deno`, `bun` JavaScript, anything else `other`. Python imports count outside strings and comments, even after `;` or `:` (`if True: import x`), plus `__import__` and `importlib.import_module` with a string literal. Python that cannot be tokenised (unbalanced brackets, unterminated strings, bad indentation) is `unparsed`. Known gap: a triple-quoted module name inside `__import__` is missed.
+
+An import is third-party unless it is in CPython 3.14's `sys.stdlib_module_names` or local: a `.py` file, or a folder holding one, beside the script or above it.
+
+<sub>Sources: [store.rs:1608-1652](../crates/skrun/src/store.rs#L1608-L1652) · [catalog.rs:1335-1394](../crates/skrun/src/catalog.rs#L1335-L1394) · [catalog.rs:1638-1679](../crates/skrun/src/catalog.rs#L1638-L1679) · [catalog.rs:1769-1815](../crates/skrun/src/catalog.rs#L1769-L1815) · [store.rs:1469-1540](../crates/skrun/src/store.rs#L1469-L1540) · +2</sub>
 
 ### The suggested tier
 
-`suggest_tier` gives each version a `tier` and `tier_reasons` from the first row that applies:
+`suggest_tier` records the first matching row as `tier`, with `tier_reasons`:
 
 | tier | when | meant to run in |
 |---|---|---|
-| `L3` | any high finding | a microVM, never outside one |
-| `L2` | a non-Python script (shell, JavaScript, TypeScript), a third-party import, or a risky stdlib import (`subprocess`, `socket`, `urllib`, `http`, `threading`, …) | a container |
+| `L3` | a high finding, an `unscanned` script, or a file shadowing a risky module (`subprocess`, `socket`, `threading`, …) | a microVM |
+| `L2` | a non-Python script (shell, JavaScript, TypeScript, `other`), a third-party or risky import, an `unscanned` or `unparsed` file, any `shadows_stdlib` | a container |
 | `L1` | a filesystem import (`os`, `pathlib`, `shutil`, `io`, …) or an `open(` call | a sandbox |
 | `L0` | Python scripts that only compute | a plain process |
 | `none` | no scripts | nothing to run |
 
-A Python import is third-party unless it is in CPython 3.14's `sys.stdlib_module_names` or a local module: a `.py` file, or a folder holding one, in the script's folder or any folder above it up to the skill root. Risky modules are never local, so bundling a `subprocess.py` cannot lower the tier; it is a `shadows_stdlib` finding instead. Only Python imports are parsed; other languages go to `L2` by language.
+A bundled `subprocess.py` raises the tier, never lowers it. The tier is a recorded suggestion: skrun has no sandbox yet, and nothing reads it back.
 
-The tier is a recorded suggestion: skrun has no sandbox yet, and nothing reads the tier back.
-
-<sub>Sources: [store.rs:126-146](../crates/skrun/src/store.rs#L126-L146) · [store.rs:1353-1429](../crates/skrun/src/store.rs#L1353-L1429) · [store.rs:1220-1291](../crates/skrun/src/store.rs#L1220-L1291) · [risk.rs:43-47](../crates/skrun/src/risk.rs#L43-L47) · [risk.rs:347-376](../crates/skrun/src/risk.rs#L347-L376) · +1</sub>
+<sub>Sources: [store.rs:155-175](../crates/skrun/src/store.rs#L155-L175) · [store.rs:1672-1814](../crates/skrun/src/store.rs#L1672-L1814) · [risk.rs:45-49](../crates/skrun/src/risk.rs#L45-L49) · [risk.rs:349-378](../crates/skrun/src/risk.rs#L349-L378) · [risk.rs:869-875](../crates/skrun/src/risk.rs#L869-L875)</sub>
 
 <a id="contributing"></a>
 
@@ -477,7 +496,7 @@ The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must 
 
 Generated by Codocia from the code on every build: areas, each area's own description, import dependencies between areas, and the pages that explain them.
 
-In scope: 53 files, 13,919 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
+In scope: 53 files, 16,537 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
 
 ### Files
 
@@ -502,28 +521,17 @@ In scope: 53 files, 13,919 lines; excluded `docs/**`, `python/tests/**`, `**/tes
 
 **`crates/skrun/`**
 
-- (files) — 22 lines, 1 file. Public API for the skrun executable skill runtime.\
+- (files) — 23 lines, 1 file. Public API for the skrun executable skill runtime.\
   Explained in: [Getting Started](#getting-started) (1)
-- `src/` — 11,496 lines, 6 files. Public API for the skrun executable skill runtime.\
+- `src/` — 14,113 lines, 6 files. Public API for the skrun executable skill runtime.\
   Hub files: `catalog.rs` `store.rs` `runtime.rs`\
-  Explained in: [Overview](#overview) (3), [Getting Started](#getting-started) (3), [Reference](#reference) (7), [How It Works](#how-it-works) (8), [Store and Risk Tiers](#store) (5), [Contributing](#contributing) (1)
+  Explained in: [Overview](#overview) (3), [Getting Started](#getting-started) (3), [Reference](#reference) (7), [How It Works](#how-it-works) (8), [Store and Risk Tiers](#store) (8), [Contributing](#contributing) (1)
 
 **`examples/`**
 
 - `frameworks/` — 92 lines, 4 files\
   Hub files: `pydantic_ai_tool.py` `langgraph_node.py` `langchain_tool.py`\
   Explained in: [Getting Started](#getting-started) (1)
-
-**`examples/skills/`**
-
-- `cdp-browser/` — 163 lines, 6 files. Binary skill for controlling Chrome through the Chrome DevTools Protocol\
-  Explained in: not covered
-- `python-echo/` — 49 lines, 6 files\
-  Hub files: `skill.py`\
-  Explained in: not covered
-- `regex-finder/` — 325 lines, 7 files. Binary skill that checks whether text matches a regex pattern\
-  Hub files: `src/main.rs`\
+- `skills/` — 589 lines, 25 files\
+  Hub files: `regex-finder/src/main.rs` `python-echo/skill.py` `rust-echo/src/main.rs`\
   Explained in: [Getting Started](#getting-started) (2), [How It Works](#how-it-works) (1)
-- `rust-echo/` — 52 lines, 6 files\
-  Hub files: `src/main.rs`\
-  Explained in: not covered

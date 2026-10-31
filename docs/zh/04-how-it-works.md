@@ -79,10 +79,10 @@ stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根�
 
 `reconcile_registry` 只改动人工维护的 `SKILL_REGISTRY.md` 中围栏代码块之外的 `| Skill | When to read | Entrypoint |` 表格（反引号或 `~~~` 围栏，只在开启它的容器内关闭：顶层、列表项或引用块；信息串含反引号的行是行内代码）。有效的行原样按序保留；入口缺失、不是 skill 或重复的行被删除；未登记的 skill 追加 `| name | summary | [id](entrypoint) |`（描述的第一句，≤160 个字符）。单元格支持 `\|` 和 `\\`；含括号、空格、`<` 或 `>` 的路径写成 `[id](<path>)`。分隔行、其他行和换行符保持不变；没有表格时报错且不写入。已知缺陷：有序列表中以 4 个以上空格缩进关闭的围栏不会关闭（`registry` 随后找不到表格），列表/引用嵌套顺序颠倒可能提前关闭围栏，含 `>` 的路径无法往返。
 
-<sub>来源: [catalog.rs:14-18](../../crates/skrun/src/catalog.rs#L14-L18) · [catalog.rs:420-452](../../crates/skrun/src/catalog.rs#L420-L452) · [catalog.rs:481-585](../../crates/skrun/src/catalog.rs#L481-L585) · [catalog.rs:2039-2082](../../crates/skrun/src/catalog.rs#L2039-L2082) · [catalog.rs:1332-1365](../../crates/skrun/src/catalog.rs#L1332-L1365) · +6</sub>
+<sub>来源: [catalog.rs:14-18](../../crates/skrun/src/catalog.rs#L14-L18) · [catalog.rs:423-455](../../crates/skrun/src/catalog.rs#L423-L455) · [catalog.rs:484-588](../../crates/skrun/src/catalog.rs#L484-L588) · [catalog.rs:3592-3635](../../crates/skrun/src/catalog.rs#L3592-L3635) · [catalog.rs:1335-1379](../../crates/skrun/src/catalog.rs#L1335-L1379) · +6</sub>
 
 ## 搜索如何排序
 
 `search_skills` 把查询按空白拆成词并转为小写，再按子串匹配，所以中文无需分词。每个词都必须命中某个字段（AND），并累加它命中的每个字段的权重：id 5，frontmatter name 4，注册表标题 4，注册表摘要、description 和每个 tag 3，入口正文 1。结果按分数排序，同分按 id；`--has-scripts` 会去掉所有 flat skill。结果显示注册表标题（否则为 name）和注册表摘要（否则为 description 的第一句：截至 `. `、`? `、`! `、`。`、`？`、`！` 或换行，最多 120 个字符），截断前先做遮蔽，因此密钥绝不会被部分打印。
 
-<sub>来源: [catalog.rs:714-738](../../crates/skrun/src/catalog.rs#L714-L738) · [catalog.rs:785-861](../../crates/skrun/src/catalog.rs#L785-L861) · [catalog.rs:901-955](../../crates/skrun/src/catalog.rs#L901-L955) · [catalog.rs:1013-1051](../../crates/skrun/src/catalog.rs#L1013-L1051) · [catalog.rs:75-87](../../crates/skrun/src/catalog.rs#L75-L87)</sub>
+<sub>来源: [catalog.rs:717-741](../../crates/skrun/src/catalog.rs#L717-L741) · [catalog.rs:788-864](../../crates/skrun/src/catalog.rs#L788-L864) · [catalog.rs:904-958](../../crates/skrun/src/catalog.rs#L904-L958) · [catalog.rs:1016-1054](../../crates/skrun/src/catalog.rs#L1016-L1054) · [catalog.rs:78-90](../../crates/skrun/src/catalog.rs#L78-L90)</sub>

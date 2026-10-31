@@ -40,9 +40,9 @@ Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<
 
 `check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a missing or drifted registry table, a stale `skills.json`, and a line holding a secret. Its one warning: a frontmatter `name` differing from the directory name.
 
-Secrets are private-key blocks and tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`. `check`, `registry` and `search` print matching user text as `<redacted>` (`redact`); a secret finding gives only `path:line`. `skills.json` keeps real paths ([How It Works](04-how-it-works.md)).
+Secrets are private-key blocks, tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`, and generic assignments such as `password: …` ([Store and Risk Tiers](05-store.md)). `check`, `registry` and `search` print matching user text as `<redacted>` (`redact`); a secret finding gives only `path:line`. `skills.json` keeps real paths ([How It Works](04-how-it-works.md)).
 
-<sub>Sources: [main.rs:173-211](../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:63-69](../crates/skrun/src/catalog.rs#L63-L69) · [catalog.rs:370-417](../crates/skrun/src/catalog.rs#L370-L417) · +6</sub>
+<sub>Sources: [main.rs:173-211](../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:66-72](../crates/skrun/src/catalog.rs#L66-L72) · [catalog.rs:373-420](../crates/skrun/src/catalog.rs#L373-L420) · +6</sub>
 
 ## Environment and default paths
 

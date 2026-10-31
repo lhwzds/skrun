@@ -3,16 +3,16 @@ title: Why catalog output is deterministic
 order: 90
 evidence:
   - crates/skrun/src/catalog.rs:14-18 #7ae25012621e
-  - crates/skrun/src/catalog.rs:420-452 #ea74ebf78ba7
-  - crates/skrun/src/catalog.rs:481-585 #4fe8f5613725
-  - crates/skrun/src/catalog.rs:2039-2082 #837e85b4c6f7
-  - crates/skrun/src/catalog.rs:1332-1365 #82736892d184
-  - crates/skrun/src/catalog.rs:1688-1745 #2345a196e61e
-  - crates/skrun/src/catalog.rs:2456-2491 #1b80cc81666d
-  - crates/skrun/src/catalog.rs:2094-2287 #92885df1d766
-  - crates/skrun/src/catalog.rs:2354-2407 #56d4f5b495f2
-  - crates/skrun/src/catalog.rs:2409-2450 #a8acb1b5fcc3
-  - crates/skrun/src/catalog.rs:1638-1686 #d523bb53cf92
+  - crates/skrun/src/catalog.rs:423-455 #ea74ebf78ba7
+  - crates/skrun/src/catalog.rs:484-588 #4fe8f5613725
+  - crates/skrun/src/catalog.rs:3592-3635 #837e85b4c6f7
+  - crates/skrun/src/catalog.rs:1335-1379 #ea70c2e9f253
+  - crates/skrun/src/catalog.rs:2446-2503 #2345a196e61e
+  - crates/skrun/src/catalog.rs:4009-4044 #1b80cc81666d
+  - crates/skrun/src/catalog.rs:3647-3840 #92885df1d766
+  - crates/skrun/src/catalog.rs:3907-3960 #56d4f5b495f2
+  - crates/skrun/src/catalog.rs:3962-4003 #a8acb1b5fcc3
+  - crates/skrun/src/catalog.rs:2396-2444 #d523bb53cf92
 ---
 
 `catalog` never runs skills, git or network calls; only `registry --write` and `index --out` write. `build_index` sorts skills by id and scripts by path, without timestamps or absolute paths. Per skill: frontmatter, entrypoint `bytes`, scripts (`.py`, `.sh`, `.js`/`.mjs`, `.ts`; Python imports) and relative links (parsed like registry cells) with whether each exists. Same input, same `skills.json`, so `check` flags a stale copy. Nothing is redacted: review it before committing.

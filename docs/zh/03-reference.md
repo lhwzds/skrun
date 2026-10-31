@@ -40,9 +40,9 @@ skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 
 
 `check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、缺失或有偏差的注册表表格、过期的 `skills.json`，以及含密钥的行。唯一的警告是 frontmatter `name` 与目录名不同。
 
-密钥指私钥块，以及以 `AKIA`、`sk-`（含 `sk-proj-`、`sk-ant-`）、`gh[pousr]_`、`github_pat_`、`glpat-`、`xox[baprs]-` 或 `AIza` 开头的令牌。`check`、`registry` 和 `search` 打印的用户文本若匹配，会显示为 `<redacted>`（`redact`）；密钥发现只给出 `path:line`。`skills.json` 保留真实路径（[工作原理](04-how-it-works.md)）。
+密钥指私钥块、以 `AKIA`、`sk-`（含 `sk-proj-`、`sk-ant-`）、`gh[pousr]_`、`github_pat_`、`glpat-`、`xox[baprs]-` 或 `AIza` 开头的令牌，以及 `password: …` 这类通用赋值（[存储与风险等级](05-store.md)）。`check`、`registry` 和 `search` 打印的用户文本若匹配，会显示为 `<redacted>`（`redact`）；密钥发现只给出 `path:line`。`skills.json` 保留真实路径（[工作原理](04-how-it-works.md)）。
 
-<sub>来源: [main.rs:173-211](../../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:63-69](../../crates/skrun/src/catalog.rs#L63-L69) · [catalog.rs:370-417](../../crates/skrun/src/catalog.rs#L370-L417) · +6</sub>
+<sub>来源: [main.rs:173-211](../../crates/skrun/src/main.rs#L173-L211) · [main.rs:783-856](../../crates/skrun/src/main.rs#L783-L856) · [main.rs:539-771](../../crates/skrun/src/main.rs#L539-L771) · [catalog.rs:66-72](../../crates/skrun/src/catalog.rs#L66-L72) · [catalog.rs:373-420](../../crates/skrun/src/catalog.rs#L373-L420) · +6</sub>
 
 ## 环境变量与默认路径
 
