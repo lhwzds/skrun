@@ -8,7 +8,7 @@ title: 代码结构
 
 本页由 Codocia 根据代码自动生成，每次 build 重新计算：功能区划分、各区自带的说明、区之间的 import 依赖，以及讲解各区的页面。
 
-范围内共 51 个文件，6,770 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
+范围内共 51 个文件，7,571 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
 
 ## 文件结构
 
@@ -32,7 +32,7 @@ title: 代码结构
 
 - （直接文件） — 19 行，1 个文件。Public API for the skrun executable skill runtime.\
   讲解：[快速上手](02-getting-started.md) (1)
-- `src/` — 4,368 行，4 个文件。Public API for the skrun executable skill runtime.\
+- `src/` — 5,169 行，4 个文件。Public API for the skrun executable skill runtime.\
   核心文件：`catalog.rs` `lib.rs` `runtime.rs`\
   讲解：[概览](01-overview.md) (3), [快速上手](02-getting-started.md) (3), [参考](03-reference.md) (7), [工作原理](04-how-it-works.md) (7), [参与开发](05-contributing.md) (1)
 

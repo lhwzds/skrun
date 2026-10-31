@@ -8,7 +8,7 @@ title: 参考
 
 CLI、环境变量、文件格式和 Python API 的准确名称，均摘自代码。`skrun`、`skrun -h`、`skrun --help` 和 `skrun help` 都会打印用法说明。
 
-<sub>来源: [main.rs:248-251](../../crates/skrun/src/main.rs#L248-L251) · [main.rs:606-621](../../crates/skrun/src/main.rs#L606-L621)</sub>
+<sub>来源: [main.rs:248-251](../../crates/skrun/src/main.rs#L248-L251) · [main.rs:639-654](../../crates/skrun/src/main.rs#L639-L654)</sub>
 
 ## CLI 命令与参数
 
@@ -23,23 +23,25 @@ skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 
 | `list` | `--root`、`--format text\|json`（`text`） |
 | `show <id>` | `--root`、`--format text\|json`（`text`） |
 
-`--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 的文本输出是以制表符分隔的 `id kind version name`。给 `run` 同时传目录和 `--id` 会报错。`--cargo` 和 `--uv` 存在，但没有写进用法说明。出错时会向 stderr 打印 `Error: ...` 并以 1 退出。
+`--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 的文本输出是以制表符分隔的 `id kind version name`。给 `run` 同时传目录和 `--id` 会报错。`--cargo` 和 `--uv` 存在，但没有写进用法说明。出错时会向 stderr 打印 `Error: ...` 并以 1 退出；看起来像密钥的回显参数和路径显示为 `<redacted>`。
 
-<sub>来源: [main.rs:46-51](../../crates/skrun/src/main.rs#L46-L51) · [main.rs:272-301](../../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-431](../../crates/skrun/src/main.rs#L370-L431) · [main.rs:544-565](../../crates/skrun/src/main.rs#L544-L565) · +1</sub>
+<sub>来源: [main.rs:47-52](../../crates/skrun/src/main.rs#L47-L52) · [main.rs:272-301](../../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-433](../../crates/skrun/src/main.rs#L370-L433) · [main.rs:577-598](../../crates/skrun/src/main.rs#L577-L598) · +1</sub>
 
 ## Catalog 命令
 
-`skrun catalog` 处理的是一个指导性 skill 目录，而不是单个制品：每个含 `SKILL.md` 的非隐藏子目录，以及除 `SKILL_REGISTRY.md`、`README.md`、`README_CN.md`、`AGENTS.md` 和 `CLAUDE.md` 之外的每个顶层 `*.md`。
+`skrun catalog` 处理的是一个指导性 skill 目录：含 `SKILL.md` 的非隐藏子目录，以及除 `SKILL_REGISTRY.md`、`README.md`、`README_CN.md`、`AGENTS.md` 和 `CLAUDE.md` 之外的顶层 `*.md`。
 
 | 命令 | 参数（默认值） | 何时以 1 退出 |
 |---|---|---|
 | `index <dir>` | `--out <file>`（stdout） | 目录无法读取 |
-| `registry <dir>` | `--registry`（`<dir>/SKILL_REGISTRY.md`）、`--write` | 不带 `--write` 时：表格有偏差；两种模式下：文件不存在、没有表格，或无法读写（`--write` 修复后以 0 退出） |
+| `registry <dir>` | `--registry`（`<dir>/SKILL_REGISTRY.md`）、`--write` | 不带 `--write` 时：表格有偏差；任何模式下：文件不存在、没有表格，或无法读写 |
 | `check <dir>` | `--registry`、`--index` | 有任何错误 |
 
-`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及看起来像私钥或 AWS、OpenAI、GitHub、Slack 令牌的行（只打印 `path:line`，从不打印值）。唯一的警告是 frontmatter `name` 与目录名不同。注册表只在文件存在或给出 `--registry` 时检查；索引只在 `<dir>/skills.json` 存在或给出 `--index` 时检查。[工作原理](04-how-it-works.md) 解释了输出为何是确定性的。
+`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及看起来像私钥或 AWS、OpenAI、GitHub、Slack 令牌的行。唯一的警告是 frontmatter `name` 与目录名不同。注册表和索引在默认路径存在或显式传入时才检查。
 
-<sub>来源: [main.rs:125-152](../../crates/skrun/src/main.rs#L125-L152) · [main.rs:506-523](../../crates/skrun/src/main.rs#L506-L523) · [main.rs:433-504](../../crates/skrun/src/main.rs#L433-L504) · [catalog.rs:57-63](../../crates/skrun/src/catalog.rs#L57-L63) · [catalog.rs:336-382](../../crates/skrun/src/catalog.rs#L336-L382) · +2</sub>
+`check` 和 `registry` 打印的用户文本（名称、链接目标、路径、格式错误的行、未知选项）若匹配上述模式，会经 `redact` 显示为 `<redacted>`；密钥发现只给出 `path:line`，路径同样会被遮蔽。`skills.json` 保留真实路径（[工作原理](04-how-it-works.md)）。
+
+<sub>来源: [main.rs:130-152](../../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../../crates/skrun/src/catalog.rs#L353-L400) · +4</sub>
 
 ## 环境变量与默认路径
 

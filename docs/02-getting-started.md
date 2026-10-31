@@ -37,7 +37,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 For Python, use `--kind python_uv`: the scaffold is a `pyproject.toml` plus an echoing `skill.py`, and `build` runs `uv lock`/`uv sync`.
 
-<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:75-83](../crates/skrun/src/main.rs#L75-L83)</sub>
+<sub>Sources: [runtime.rs:623-659](../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:80-88](../crates/skrun/src/main.rs#L80-L88)</sub>
 
 ## Install it and call it from Python
 
@@ -58,7 +58,7 @@ skrun.skill("/tmp/rust-echo").call({"ok": True})   # or by path
 
 `skrun.skill` treats its argument as a path when that directory contains `artifact.json` or `SKILL.md`, otherwise as an id under the skills root. Because install copies, re-install with `--overwrite` after rebuilding a skill ([How It Works](04-how-it-works.md)).
 
-<sub>Sources: [main.rs:84-109](../crates/skrun/src/main.rs#L84-L109) · [skill.py:236-240](../python/skrun/skill.py#L236-L240)</sub>
+<sub>Sources: [main.rs:89-114](../crates/skrun/src/main.rs#L89-L114) · [skill.py:236-240](../python/skrun/skill.py#L236-L240)</sub>
 
 ## Try a real example
 

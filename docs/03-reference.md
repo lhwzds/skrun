@@ -8,7 +8,7 @@ title: Reference
 
 Exact names for the CLI, environment, file formats and Python API, copied from the code. `skrun`, `skrun -h`, `skrun --help` and `skrun help` print the usage text.
 
-<sub>Sources: [main.rs:248-251](../crates/skrun/src/main.rs#L248-L251) · [main.rs:606-621](../crates/skrun/src/main.rs#L606-L621)</sub>
+<sub>Sources: [main.rs:248-251](../crates/skrun/src/main.rs#L248-L251) · [main.rs:639-654](../crates/skrun/src/main.rs#L639-L654)</sub>
 
 ## CLI commands and flags
 
@@ -23,23 +23,25 @@ Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<
 | `list` | `--root`, `--format text\|json` (`text`) |
 | `show <id>` | `--root`, `--format text\|json` (`text`) |
 
-`--root` defaults to the skills root (see below). Text output of `list` and `show` is tab-separated `id kind version name`. Passing both a directory and `--id` to `run` is an error. `--cargo` and `--uv` exist but are not in the usage text. Errors print `Error: ...` to stderr and exit 1.
+`--root` defaults to the skills root (see below). Text output of `list` and `show` is tab-separated `id kind version name`. Passing both a directory and `--id` to `run` is an error. `--cargo` and `--uv` exist but are not in the usage text. Errors print `Error: ...` to stderr and exit 1; echoed arguments and paths that look like a secret print as `<redacted>`.
 
-<sub>Sources: [main.rs:46-51](../crates/skrun/src/main.rs#L46-L51) · [main.rs:272-301](../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-431](../crates/skrun/src/main.rs#L370-L431) · [main.rs:544-565](../crates/skrun/src/main.rs#L544-L565) · +1</sub>
+<sub>Sources: [main.rs:47-52](../crates/skrun/src/main.rs#L47-L52) · [main.rs:272-301](../crates/skrun/src/main.rs#L272-L301) · [main.rs:303-368](../crates/skrun/src/main.rs#L303-L368) · [main.rs:370-433](../crates/skrun/src/main.rs#L370-L433) · [main.rs:577-598](../crates/skrun/src/main.rs#L577-L598) · +1</sub>
 
 ## Catalog commands
 
-`skrun catalog` works on a directory of guidance skills, not on one artifact: each non-hidden subdirectory with a `SKILL.md`, plus each top-level `*.md` except `SKILL_REGISTRY.md`, `README.md`, `README_CN.md`, `AGENTS.md` and `CLAUDE.md`.
+`skrun catalog` works on a directory of guidance skills: non-hidden subdirectories with a `SKILL.md`, plus top-level `*.md` except `SKILL_REGISTRY.md`, `README.md`, `README_CN.md`, `AGENTS.md` and `CLAUDE.md`.
 
 | command | flags (default) | exits 1 when |
 |---|---|---|
 | `index <dir>` | `--out <file>` (stdout) | the directory cannot be read |
-| `registry <dir>` | `--registry` (`<dir>/SKILL_REGISTRY.md`), `--write` | without `--write`, the table drifted; in both modes, the file is missing, has no table, or cannot be read or written (`--write` exits 0 after repairing) |
+| `registry <dir>` | `--registry` (`<dir>/SKILL_REGISTRY.md`), `--write` | without `--write`, the table drifted; always, the file is missing, has no table, or cannot be read or written |
 | `check <dir>` | `--registry`, `--index` | any error |
 
-`check` reports as errors: a folder skill without frontmatter `name` or `description`, a broken relative link, a registry without the table or with drift, a `skills.json` that differs from a fresh index, and a line that looks like a private key or an AWS, OpenAI, GitHub or Slack token (printed as `path:line`, never the value). The only warning is a frontmatter `name` that differs from the directory name. The registry is checked only if it exists or `--registry` is given; the index only if `<dir>/skills.json` exists or `--index` is given. [How It Works](04-how-it-works.md) explains why the outputs are deterministic.
+`check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a registry without the table or drifted, a `skills.json` differing from a fresh index, and a line that looks like a private key or an AWS, OpenAI, GitHub or Slack token. Its one warning: a frontmatter `name` differing from the directory name. Registry and index are checked when present at the default path or passed.
 
-<sub>Sources: [main.rs:125-152](../crates/skrun/src/main.rs#L125-L152) · [main.rs:506-523](../crates/skrun/src/main.rs#L506-L523) · [main.rs:433-504](../crates/skrun/src/main.rs#L433-L504) · [catalog.rs:57-63](../crates/skrun/src/catalog.rs#L57-L63) · [catalog.rs:336-382](../crates/skrun/src/catalog.rs#L336-L382) · +2</sub>
+`check` and `registry` print user text (names, link targets, paths, malformed rows, unknown options) matching those patterns as `<redacted>` (`redact`); a secret finding gives only `path:line`, the path masked too. `skills.json` keeps real paths ([How It Works](04-how-it-works.md)).
+
+<sub>Sources: [main.rs:130-152](../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../crates/skrun/src/catalog.rs#L353-L400) · +4</sub>
 
 ## Environment and default paths
 

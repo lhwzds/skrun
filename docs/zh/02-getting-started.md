@@ -37,7 +37,7 @@ skrun skill run --input '{"ok":true}' /tmp/rust-echo
 
 Python 则使用 `--kind python_uv`：脚手架是一个 `pyproject.toml` 加一个回显输入的 `skill.py`，`build` 会运行 `uv lock`/`uv sync`。
 
-<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:75-83](../../crates/skrun/src/main.rs#L75-L83)</sub>
+<sub>来源: [runtime.rs:623-659](../../crates/skrun/src/runtime.rs#L623-L659) · [runtime.rs:828-866](../../crates/skrun/src/runtime.rs#L828-L866) · [runtime.rs:954-992](../../crates/skrun/src/runtime.rs#L954-L992) · [main.rs:80-88](../../crates/skrun/src/main.rs#L80-L88)</sub>
 
 ## 安装 skill 并从 Python 调用
 
@@ -58,7 +58,7 @@ skrun.skill("/tmp/rust-echo").call({"ok": True})   # 或者按路径
 
 如果参数对应的目录中包含 `artifact.json` 或 `SKILL.md`，`skrun.skill` 就把它当作路径，否则当作 skill 根目录下的 id。由于安装是复制，重新构建 skill 后要用 `--overwrite` 重新安装（[工作原理](04-how-it-works.md)）。
 
-<sub>来源: [main.rs:84-109](../../crates/skrun/src/main.rs#L84-L109) · [skill.py:236-240](../../python/skrun/skill.py#L236-L240)</sub>
+<sub>来源: [main.rs:89-114](../../crates/skrun/src/main.rs#L89-L114) · [skill.py:236-240](../../python/skrun/skill.py#L236-L240)</sub>
 
 ## 试一个真实示例
 

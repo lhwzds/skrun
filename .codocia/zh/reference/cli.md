@@ -1,6 +1,6 @@
 ---
 title: CLI 命令与参数
-source: #589871180fa2
+source: #190f4c973782
 ---
 
 skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 `<dir>` / `<id>` 可以出现在参数之间的任意位置。
@@ -14,4 +14,4 @@ skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 
 | `list` | `--root`、`--format text\|json`（`text`） |
 | `show <id>` | `--root`、`--format text\|json`（`text`） |
 
-`--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 的文本输出是以制表符分隔的 `id kind version name`。给 `run` 同时传目录和 `--id` 会报错。`--cargo` 和 `--uv` 存在，但没有写进用法说明。出错时会向 stderr 打印 `Error: ...` 并以 1 退出。
+`--root` 默认为 skill 根目录（见下文）。`list` 和 `show` 的文本输出是以制表符分隔的 `id kind version name`。给 `run` 同时传目录和 `--id` 会报错。`--cargo` 和 `--uv` 存在，但没有写进用法说明。出错时会向 stderr 打印 `Error: ...` 并以 1 退出；看起来像密钥的回显参数和路径显示为 `<redacted>`。

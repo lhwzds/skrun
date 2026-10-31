@@ -48,4 +48,4 @@ make check    # lint + test + python
 
 runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must Not`、`Inputs`、`Outputs`、`Depends On`、`Verify`）。转移职责时要更新它，并遵守 `Must Not` 列表：runtime 不做规划、不解析 `@skill` 提及、不渲染 UI，也不保存持久状态。新操作应先放进 `runtime.rs`，再通过 `main.rs` 和 `crates/py/src/lib.rs` 暴露出去，绝不在 Python 中实现。
 
-<sub>来源: [runtime.rs:55-61](../../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:544-573](../../crates/skrun/src/main.rs#L544-L573) · [runtime.rs:3-17](../../crates/skrun/src/runtime.rs#L3-L17)</sub>
+<sub>来源: [runtime.rs:55-61](../../crates/skrun/src/runtime.rs#L55-L61) · [runtime.rs:586-592](../../crates/skrun/src/runtime.rs#L586-L592) · [main.rs:577-606](../../crates/skrun/src/main.rs#L577-L606) · [runtime.rs:3-17](../../crates/skrun/src/runtime.rs#L3-L17)</sub>
