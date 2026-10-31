@@ -328,11 +328,11 @@ stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根�
 
 ### 为什么 catalog 的输出是确定的
 
-`catalog` 从不运行 skill，不调用 git，也不访问网络；只有 `registry --write` 和 `index --out` 会写文件。`build_index` 按 id 排序 skill、按路径排序脚本，不记录时间戳或绝对路径。每个 skill 记录：frontmatter（`name`、`description`、`version`、`tags`、`requires`）、入口文件 `bytes`、脚本（`.py`、`.sh`、`.js`/`.mjs`、`.ts`；Python 脚本附带顶层导入）以及相对链接和各目标是否存在。输入相同，`skills.json` 就相同，所以 `check` 能发现过期的副本。这里不做任何遮蔽：提交前请检查 frontmatter 和路径。
+`catalog` 从不运行 skill，也不调用 git 或网络；只有 `registry --write` 和 `index --out` 会写文件。`build_index` 按 id 排序 skill、按路径排序脚本，不含时间戳或绝对路径。每个 skill 记录：frontmatter、入口文件 `bytes`、脚本（`.py`、`.sh`、`.js`/`.mjs`、`.ts`；Python 附带导入）以及相对链接（与注册表单元格同样解析）和各目标是否存在。输入相同，`skills.json` 就相同，所以 `check` 能发现过期的副本。这里不做任何遮蔽：提交前请先检查。
 
-`reconcile_registry` 把 `SKILL_REGISTRY.md` 当作人工维护的文本，只改动围栏代码块（反引号或 `~~~`，列表项和引用块中的也算；信息串中含反引号的行是行内代码）之外的 `| Skill | When to read | Entrypoint |` 表格。有效的行原样按顺序保留；入口缺失、不是 skill 或重复的行被删除；未登记的 skill 追加 `| name | summary | [id](entrypoint) |`，summary 取描述的第一句（≤160 个字符）。单元格支持 `\|` 和 `\\` 转义；含括号、空格、`<` 或 `>` 的路径写成 `[id](<path>)`；两种写法都能解析，所以行可以原样往返（含 `>` 的路径暂不支持）。对齐分隔行、其他行和换行符保持不变；没有表格时直接报错，不写入文件。
+`reconcile_registry` 只改动人工维护的 `SKILL_REGISTRY.md` 中围栏代码块之外的 `| Skill | When to read | Entrypoint |` 表格（反引号或 `~~~` 围栏，只在开启它的容器内关闭：顶层、列表项或引用块；信息串含反引号的行是行内代码）。有效的行原样按序保留；入口缺失、不是 skill 或重复的行被删除；未登记的 skill 追加 `| name | summary | [id](entrypoint) |`（描述的第一句，≤160 个字符）。单元格支持 `\|` 和 `\\`；含括号、空格、`<` 或 `>` 的路径写成 `[id](<path>)`。分隔行、其他行和换行符保持不变；没有表格时报错且不写入。已知缺陷：有序列表中以 4 个以上空格缩进关闭的围栏不会关闭（`registry` 随后找不到表格），列表/引用嵌套顺序颠倒可能提前关闭围栏，含 `>` 的路径无法往返。
 
-<sub>来源: [catalog.rs:12-16](../../crates/skrun/src/catalog.rs#L12-L16) · [catalog.rs:403-435](../../crates/skrun/src/catalog.rs#L403-L435) · [catalog.rs:464-568](../../crates/skrun/src/catalog.rs#L464-L568) · [catalog.rs:1299-1342](../../crates/skrun/src/catalog.rs#L1299-L1342) · [catalog.rs:845-893](../../crates/skrun/src/catalog.rs#L845-L893) · +5</sub>
+<sub>来源: [catalog.rs:12-16](../../crates/skrun/src/catalog.rs#L12-L16) · [catalog.rs:403-435](../../crates/skrun/src/catalog.rs#L403-L435) · [catalog.rs:464-568](../../crates/skrun/src/catalog.rs#L464-L568) · [catalog.rs:1305-1348](../../crates/skrun/src/catalog.rs#L1305-L1348) · [catalog.rs:845-893](../../crates/skrun/src/catalog.rs#L845-L893) · +6</sub>
 
 <a id="contributing"></a>
 
@@ -388,7 +388,7 @@ runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must
 
 本页由 Codocia 根据代码自动生成，每次 build 重新计算：功能区划分、各区自带的说明、区之间的 import 依赖，以及讲解各区的页面。
 
-范围内共 51 个文件，7,984 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
+范围内共 51 个文件，8,132 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
 
 ### 文件结构
 
@@ -412,7 +412,7 @@ runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must
 
 - （直接文件） — 19 行，1 个文件。Public API for the skrun executable skill runtime.\
   讲解：[快速上手](#getting-started) (1)
-- `src/` — 5,582 行，4 个文件。Public API for the skrun executable skill runtime.\
+- `src/` — 5,730 行，4 个文件。Public API for the skrun executable skill runtime.\
   核心文件：`catalog.rs` `lib.rs` `runtime.rs`\
   讲解：[概览](#overview) (3), [快速上手](#getting-started) (3), [参考](#reference) (7), [工作原理](#how-it-works) (7), [参与开发](#contributing) (1)
 
@@ -429,19 +429,12 @@ runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must
 - `python-echo/` — 49 行，6 个文件\
   核心文件：`skill.py`\
   讲解：未讲解
+- `regex-finder/` — 325 行，7 个文件。Binary skill that checks whether text matches a regex pattern\
+  核心文件：`src/main.rs`\
+  讲解：[快速上手](#getting-started) (2), [工作原理](#how-it-works) (1)
 - `rust-echo/` — 52 行，6 个文件\
   核心文件：`src/main.rs`\
   讲解：未讲解
-
-**`examples/skills/regex-finder/`**
-
-- （直接文件） — 74 行，4 个文件。Binary skill that checks whether text matches a regex pattern\
-  讲解：[快速上手](#getting-started) (1)
-- `schema/` — 48 行，2 个文件\
-  讲解：[快速上手](#getting-started) (1)
-- `src/` — 203 行，1 个文件\
-  核心文件：`main.rs`\
-  讲解：[快速上手](#getting-started) (2), [工作原理](#how-it-works) (1)
 
 **`python/`**
 

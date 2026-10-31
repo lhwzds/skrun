@@ -8,7 +8,7 @@ title: 代码结构
 
 本页由 Codocia 根据代码自动生成，每次 build 重新计算：功能区划分、各区自带的说明、区之间的 import 依赖，以及讲解各区的页面。
 
-范围内共 51 个文件，7,984 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
+范围内共 51 个文件，8,132 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
 
 ## 文件结构
 
@@ -32,7 +32,7 @@ title: 代码结构
 
 - （直接文件） — 19 行，1 个文件。Public API for the skrun executable skill runtime.\
   讲解：[快速上手](02-getting-started.md) (1)
-- `src/` — 5,582 行，4 个文件。Public API for the skrun executable skill runtime.\
+- `src/` — 5,730 行，4 个文件。Public API for the skrun executable skill runtime.\
   核心文件：`catalog.rs` `lib.rs` `runtime.rs`\
   讲解：[概览](01-overview.md) (3), [快速上手](02-getting-started.md) (3), [参考](03-reference.md) (7), [工作原理](04-how-it-works.md) (7), [参与开发](05-contributing.md) (1)
 
@@ -49,19 +49,12 @@ title: 代码结构
 - `python-echo/` — 49 行，6 个文件\
   核心文件：`skill.py`\
   讲解：未讲解
+- `regex-finder/` — 325 行，7 个文件。Binary skill that checks whether text matches a regex pattern\
+  核心文件：`src/main.rs`\
+  讲解：[快速上手](02-getting-started.md) (2), [工作原理](04-how-it-works.md) (1)
 - `rust-echo/` — 52 行，6 个文件\
   核心文件：`src/main.rs`\
   讲解：未讲解
-
-**`examples/skills/regex-finder/`**
-
-- （直接文件） — 74 行，4 个文件。Binary skill that checks whether text matches a regex pattern\
-  讲解：[快速上手](02-getting-started.md) (1)
-- `schema/` — 48 行，2 个文件\
-  讲解：[快速上手](02-getting-started.md) (1)
-- `src/` — 203 行，1 个文件\
-  核心文件：`main.rs`\
-  讲解：[快速上手](02-getting-started.md) (2), [工作原理](04-how-it-works.md) (1)
 
 **`python/`**
 

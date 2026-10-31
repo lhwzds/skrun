@@ -10,8 +10,8 @@ evidence:
   - crates/skrun/src/catalog.rs:571-694 #64df15467c4d
   - crates/skrun/src/catalog.rs:193-208 #2f9a08ba011c
   - crates/skrun/src/catalog.rs:240-276 #931a320d30be
-  - crates/skrun/src/catalog.rs:1080-1095 #b4503feb606c
-  - crates/skrun/src/catalog.rs:1097-1107 #2bd09f5fe0b0
+  - crates/skrun/src/catalog.rs:1086-1101 #b4503feb606c
+  - crates/skrun/src/catalog.rs:1103-1113 #2bd09f5fe0b0
 ---
 
 `skrun catalog` works on a directory of guidance skills: non-hidden subdirectories with a `SKILL.md`, plus top-level `*.md` except `SKILL_REGISTRY.md`, `README.md`, `README_CN.md`, `AGENTS.md` and `CLAUDE.md`.
