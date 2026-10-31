@@ -945,7 +945,25 @@ fn registry_row(skill: &Skill) -> String {
     let summary = summary_of(skill.frontmatter.description.as_deref());
     let id = escape_cell(&skill.id);
     let entrypoint = escape_cell(&path_to_string(&skill.entrypoint));
-    format!("| {} | {} | [{}]({}) |", title, summary, id, entrypoint)
+    format!(
+        "| {} | {} | {} |",
+        title,
+        summary,
+        link_cell(&id, &entrypoint)
+    )
+}
+
+/// The markdown link of a registry cell.
+///
+/// A path that holds a parenthesis, a space or an angle bracket is written
+/// between angle brackets, so the markdown parser reads the whole path as
+/// the destination of the link.
+fn link_cell(label: &str, path: &str) -> String {
+    if path.contains(['(', ')', ' ', '<', '>']) {
+        format!("[{label}](<{path}>)")
+    } else {
+        format!("[{label}]({path})")
+    }
 }
 
 /// Escape a cell so the text stays inside its table cell.
@@ -1080,7 +1098,11 @@ fn line_has_secret(line: &str) -> bool {
     has_private_key(line)
         || has_aws_key(line)
         || has_openai_key(line)
+        || has_sk_key(line)
         || has_github_token(line)
+        || has_github_pat(line)
+        || has_gitlab_token(line)
+        || has_google_key(line)
         || has_slack_token(line)
 }
 
@@ -1174,6 +1196,74 @@ fn has_slack_token(line: &str) -> bool {
             {
                 return true;
             }
+        }
+        search = at + 1;
+    }
+    false
+}
+
+/// Whether the line holds a `sk-` key such as `sk-proj-…` or `sk-ant-…`.
+///
+/// The key body holds letters, digits, dashes and underscores; a body that
+/// is shorter than twenty characters is not a key.
+fn has_sk_key(line: &str) -> bool {
+    has_prefixed_body(
+        line,
+        "sk-",
+        |character| character.is_ascii_alphanumeric() || character == '-' || character == '_',
+        20,
+    )
+}
+
+/// Whether the line holds a fine grained GitHub token.
+///
+/// A fine grained personal access token starts with `github_pat_` and holds
+/// at least twenty letters, digits or underscores.
+fn has_github_pat(line: &str) -> bool {
+    has_prefixed_body(
+        line,
+        "github_pat_",
+        |character| character.is_ascii_alphanumeric() || character == '_',
+        20,
+    )
+}
+
+/// Whether the line holds a GitLab personal access token.
+///
+/// A GitLab token starts with `glpat-` and holds at least twenty letters,
+/// digits, dashes or underscores.
+fn has_gitlab_token(line: &str) -> bool {
+    has_prefixed_body(
+        line,
+        "glpat-",
+        |character| character.is_ascii_alphanumeric() || character == '-' || character == '_',
+        20,
+    )
+}
+
+/// Whether the line holds a Google API key.
+///
+/// A Google API key starts with `AIza` and holds thirty five letters, digits,
+/// dashes or underscores.
+fn has_google_key(line: &str) -> bool {
+    has_prefixed_body(
+        line,
+        "AIza",
+        |character| character.is_ascii_alphanumeric() || character == '-' || character == '_',
+        35,
+    )
+}
+
+/// Whether the line holds a token that starts with `prefix`.
+///
+/// The body after the prefix has to hold at least `count` characters of the
+/// given class; a shorter body is not a token.
+fn has_prefixed_body(line: &str, prefix: &str, class: impl Fn(char) -> bool, count: usize) -> bool {
+    let mut search = 0;
+    while let Some(offset) = line[search..].find(prefix) {
+        let at = search + offset;
+        if has_class_prefix(&line[at + prefix.len()..], &class, count) {
+            return true;
         }
         search = at + 1;
     }
@@ -1274,9 +1364,13 @@ impl Fence {
     /// The fence that opens on `text`, when the line opens a code block.
     ///
     /// A fence is a line that starts with three or more backticks or tildes;
-    /// it may be indented by up to three spaces.
+    /// it may be indented by up to three spaces and may live inside a list
+    /// item or a block quote.
+    ///
+    /// A backtick fence may not hold a backtick in its info string: such a
+    /// line is inline code, not a fence.
     fn opening(text: &str) -> Option<Self> {
-        let rest = strip_fence_indent(text)?;
+        let rest = strip_fence_prefix(text)?;
         let marker = rest.chars().next()?;
         if marker != '`' && marker != '~' {
             return None;
@@ -1285,15 +1379,21 @@ impl Fence {
         if length < 3 {
             return None;
         }
+        // The info string of a backtick fence may not hold a backtick; a
+        // line such as "```code``` here" is inline code, not a fence.
+        if marker == '`' && rest[length..].contains('`') {
+            return None;
+        }
         Some(Fence { marker, length })
     }
 
     /// Whether `text` closes a block that was opened by this fence.
     ///
     /// The closing fence uses the same character, is at least as long as the
-    /// opening fence and holds nothing but the fence itself.
+    /// opening fence and holds nothing but the fence itself. It may sit in
+    /// the same list item or block quote as the opening fence.
     fn closes(&self, text: &str) -> bool {
-        let Some(rest) = strip_fence_indent(text) else {
+        let Some(rest) = strip_fence_prefix(text) else {
             return false;
         };
         let length = rest.chars().take_while(|c| *c == self.marker).count();
@@ -1301,16 +1401,63 @@ impl Fence {
     }
 }
 
-/// The text of a line without its leading fence indentation.
+/// The text of a line without the markers that may precede a fence.
 ///
-/// A fence may be indented by up to three spaces; a deeper indentation is an
-/// indented code block and never opens a fence.
-fn strip_fence_indent(text: &str) -> Option<&str> {
-    let spaces = text.chars().take_while(|c| *c == ' ').count();
-    if spaces > 3 {
-        return None;
+/// A fence may be indented by up to three spaces and may live inside a list
+/// item or a block quote, so the list marker and the block quote marker are
+/// stripped as well. A deeper indentation is an indented code block and
+/// never opens a fence.
+///
+/// A marker holds the space that belongs to it: the block quote marker is a
+/// `>` with the space behind it and the list marker is a dash with the space
+/// behind it. The space of a marker is not an indentation, so the three
+/// spaces of the indentation are free behind every marker.
+fn strip_fence_prefix(text: &str) -> Option<&str> {
+    let mut rest = text;
+    loop {
+        let spaces = rest.chars().take_while(|c| *c == ' ').count();
+        if spaces > 3 {
+            return None;
+        }
+        rest = &rest[spaces..];
+        // The block quote marker is a `>` with the space behind it; a `>`
+        // without a space holds no space of its own.
+        if let Some(stripped) = rest.strip_prefix("> ") {
+            rest = stripped;
+            continue;
+        }
+        if let Some(stripped) = rest.strip_prefix('>') {
+            rest = stripped;
+            continue;
+        }
+        if let Some(stripped) = strip_list_marker(rest) {
+            rest = stripped;
+            continue;
+        }
+        return Some(rest);
     }
-    Some(&text[spaces..])
+}
+
+/// The text after a leading list marker, when the line starts with one.
+///
+/// The markers are `- `, `* `, `+ ` and an ordered marker such as `1. ` or
+/// `1) `.
+fn strip_list_marker(text: &str) -> Option<&str> {
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = text.strip_prefix(marker) {
+            return Some(rest);
+        }
+    }
+    let digits = text.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 {
+        let rest = &text[digits..];
+        for marker in [". ", ") "] {
+            if let Some(rest) = rest.strip_prefix(marker) {
+                return Some(rest);
+            }
+        }
+    }
+    None
 }
 
 /// Mark every line that belongs to a fenced code block.
@@ -1433,11 +1580,38 @@ fn split_cells(text: &str) -> Vec<String> {
     cells
 }
 
+/// The destination of the markdown link in a table cell.
+///
+/// Both `(path)` and `(<path>)` are accepted. A plain destination may hold
+/// balanced parentheses, so a path such as `demo(v2)/SKILL.md` reads back as
+/// the whole path.
 fn extract_link_path(cell: &str) -> Option<String> {
     let start = cell.find("](")? + 2;
     let rest = &cell[start..];
-    let end = rest.find(')')?;
-    Some(rest[..end].trim().to_string())
+    if let Some(inner) = rest.strip_prefix('<') {
+        let end = inner.find('>')?;
+        return Some(inner[..end].trim().to_string());
+    }
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for (index, character) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return Some(rest[..index].trim().to_string());
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Rewrite the registry file with the kept rows and the appended rows.
@@ -2408,6 +2582,245 @@ mod tests {
         assert!(!line_has_secret("ghp_01234567890123456789012345678"));
         assert!(line_has_secret("xoxb-0123456789"));
         assert!(!line_has_secret("xoxb-012345678"));
+    }
+
+    #[test]
+    fn detects_the_new_secret_shapes() {
+        // A project key, an application key and every other `sk-` key.
+        assert!(line_has_secret(
+            "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+        ));
+        assert!(line_has_secret(
+            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345"
+        ));
+        assert!(line_has_secret("sk-abcdefghijklmnopqrstuvwxyz012345"));
+        // A fine grained GitHub token.
+        assert!(line_has_secret(
+            "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz"
+        ));
+        // A GitLab personal access token.
+        assert!(line_has_secret(
+            "glpat-abcdefghijklmnopqrstuvwxyz0123456789"
+        ));
+        // A Google API key.
+        assert!(line_has_secret("AIzaSyA1234567890abcdefghijklmnopqrstuv"));
+        // The keys are found in a longer text as well.
+        assert!(line_has_secret(
+            "token: AIzaSyA1234567890abcdefghijklmnopqrstuv"
+        ));
+        assert!(line_has_secret(
+            "export TOKEN=glpat-abcdefghijklmnopqrstuvwxyz0123"
+        ));
+    }
+
+    #[test]
+    fn the_new_secret_matchers_respect_the_minimum_length() {
+        assert!(!line_has_secret("sk-proj-short"));
+        assert!(!line_has_secret("sk-0123456789012345678"));
+        assert!(!line_has_secret("github_pat_short"));
+        assert!(!line_has_secret("github_pat_0123456789012345678"));
+        assert!(!line_has_secret("glpat-short"));
+        assert!(!line_has_secret("glpat-0123456789012345678"));
+        assert!(!line_has_secret("AIzaShort"));
+        assert!(!line_has_secret("AIzaSyA1234567890abcdefghijklmnopqrstu"));
+    }
+
+    #[test]
+    fn registry_ignores_a_fenced_example_inside_a_list_item() {
+        let dir = temp_dir("registry-list-fence");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        let fence = concat!(
+            "- ```markdown\n",
+            "  | Skill | When to read | Entrypoint |\n",
+            "  | --- | --- | --- |\n",
+            "  | Fake | When faking | [fake](fake/SKILL.md) |\n",
+            "  ```\n",
+        );
+        let table = concat!(
+            "| Skill | When to read | Entrypoint |\n",
+            "| --- | --- | --- |\n",
+            "| Ghost | When ghosting | [ghost](ghost/SKILL.md) |\n",
+        );
+        write(
+            &registry,
+            &format!("# Skills\n\n{fence}\n{table}\nTrailing text.\n"),
+        );
+
+        let report = reconcile_registry(&dir, &registry, true).unwrap();
+
+        // The fenced example is not a table; the real table is reconciled.
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].entrypoint, "ghost/SKILL.md");
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(report.missing[0].entrypoint, "demo/SKILL.md");
+
+        let after = fs::read_to_string(&registry).unwrap();
+        // The fenced example keeps its bytes.
+        assert!(after.contains(fence), "{after}");
+        assert!(
+            after.contains("| Demo | A demo skill. | [demo](demo/SKILL.md) |"),
+            "{after}"
+        );
+        assert!(after.ends_with("\nTrailing text.\n"), "{after}");
+    }
+
+    #[test]
+    fn a_fence_inside_a_block_quote_is_a_fence() {
+        let dir = temp_dir("registry-quote-fence");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        let fence = concat!(
+            "> ```markdown\n",
+            "> | Skill | When to read | Entrypoint |\n",
+            "> | --- | --- | --- |\n",
+            "> | Fake | When faking | [fake](fake/SKILL.md) |\n",
+            "> ```\n",
+        );
+        let table = concat!(
+            "| Skill | When to read | Entrypoint |\n",
+            "| --- | --- | --- |\n",
+            "| Demo | When demoing | [demo](demo/SKILL.md) |\n",
+        );
+        write(&registry, &format!("# Skills\n\n{fence}\n{table}\n"));
+
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+
+        // The quoted header is not the registry table.
+        assert!(!report.out_of_sync());
+        assert_eq!(report.kept, vec!["demo/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn fence_prefix_strips_the_markers_with_their_space() {
+        // The space behind a marker belongs to the marker, so the three
+        // spaces of the indentation are free behind every marker.
+        assert_eq!(strip_fence_prefix(">    ```"), Some("```"));
+        assert_eq!(strip_fence_prefix("> ```"), Some("```"));
+        assert_eq!(strip_fence_prefix(">```"), Some("```"));
+        assert_eq!(strip_fence_prefix("-    ```"), Some("```"));
+        assert_eq!(strip_fence_prefix("   > ```"), Some("```"));
+        assert_eq!(strip_fence_prefix("> - ```"), Some("```"));
+        // A deeper indentation is an indented code block.
+        assert_eq!(strip_fence_prefix("    ```"), None);
+        assert_eq!(strip_fence_prefix(">     ```"), None);
+    }
+
+    #[test]
+    fn a_closing_fence_in_a_block_quote_is_found() {
+        let dir = temp_dir("registry-quote-fence-closer");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        // The closing fence sits behind the block quote marker and three
+        // spaces; it closes the quoted example.
+        let fence = concat!(
+            "> ```markdown\n",
+            "> | Skill | When to read | Entrypoint |\n",
+            "> | --- | --- | --- |\n",
+            "> | Fake | When faking | [fake](fake/SKILL.md) |\n",
+            ">    ```\n",
+        );
+        let table = concat!(
+            "| Skill | When to read | Entrypoint |\n",
+            "| --- | --- | --- |\n",
+            "| Demo | When demoing | [demo](demo/SKILL.md) |\n",
+        );
+        write(&registry, &format!("# Skills\n\n{fence}\n{table}\n"));
+
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+
+        // The quoted example is fenced, so the table below it is the
+        // registry table.
+        assert!(!report.out_of_sync());
+        assert_eq!(report.exit_code(false), 0);
+        assert_eq!(report.kept, vec!["demo/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn a_backtick_line_with_a_backtick_is_not_a_fence() {
+        let dir = temp_dir("registry-inline-code");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            concat!(
+                "# Skills\n",
+                "\n",
+                "```code``` here\n",
+                "\n",
+                "| Skill | When to read | Entrypoint |\n",
+                "| --- | --- | --- |\n",
+                "| Demo | When demoing | [demo](demo/SKILL.md) |\n",
+            ),
+        );
+
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+
+        // The inline code line is not a fence, so the table below it is the
+        // registry table.
+        assert!(!report.out_of_sync());
+        assert_eq!(report.exit_code(false), 0);
+        assert_eq!(report.kept, vec!["demo/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn link_destinations_accept_both_forms() {
+        assert_eq!(
+            extract_link_path("[demo](demo/SKILL.md)").as_deref(),
+            Some("demo/SKILL.md")
+        );
+        assert_eq!(
+            extract_link_path("[demo](<demo/SKILL.md>)").as_deref(),
+            Some("demo/SKILL.md")
+        );
+        // A plain destination may hold balanced parentheses.
+        assert_eq!(
+            extract_link_path("[demo](demo(v2)/SKILL.md)").as_deref(),
+            Some("demo(v2)/SKILL.md")
+        );
+        assert_eq!(
+            extract_link_path("[demo](<demo(v2)/SKILL.md>)").as_deref(),
+            Some("demo(v2)/SKILL.md")
+        );
+        assert_eq!(extract_link_path("demo/SKILL.md"), None);
+    }
+
+    #[test]
+    fn registry_rows_wrap_a_path_with_parentheses() {
+        let dir = temp_dir("registry-parentheses");
+        write(
+            &dir.join("demo(v2)/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            "| Skill | When to read | Entrypoint |\n| --- | --- | --- |\n",
+        );
+
+        reconcile_registry(&dir, &registry, true).unwrap();
+
+        let after = fs::read_to_string(&registry).unwrap();
+        assert!(after.contains("[demo(v2)](<demo(v2)/SKILL.md>)"), "{after}");
+
+        // The written row reads back as the same entrypoint, so the table is
+        // in sync and a dry run succeeds.
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+        assert!(!report.out_of_sync());
+        assert_eq!(report.exit_code(false), 0);
+        assert_eq!(report.kept, vec!["demo(v2)/SKILL.md".to_string()]);
     }
 
     fn fixture(name: &str) -> PathBuf {

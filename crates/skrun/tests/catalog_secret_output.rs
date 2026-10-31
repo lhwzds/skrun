@@ -13,6 +13,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A key shaped value that must never reach the command output.
 const SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
 
+/// A synthetic token of every shape the catalog has to hide.
+///
+/// The tokens are made up, they hold no real key; they only have the shape
+/// of one, so the catalog has to treat them as a secret.
+const TOKENS: [&str; 5] = [
+    "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+    "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345",
+    "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz",
+    "glpat-abcdefghijklmnopqrstuvwxyz0123456789",
+    "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+];
+
 /// The `skrun` binary that cargo built for this test run.
 const BINARY: &str = env!("CARGO_BIN_EXE_skrun");
 
@@ -82,6 +94,43 @@ fn a_title_with_pipes_and_backslashes_round_trips() {
     assert!(stdout.contains("status: in sync"), "{stdout}");
 }
 
+#[test]
+fn the_new_secret_shapes_never_reach_the_output() {
+    let dir = secret_shapes_fixture("catalog-secret-shapes");
+    let path = dir.to_str().unwrap();
+
+    // The check reports every token by its path and its line.
+    let output = run(&["catalog", "check", path]);
+    assert_ne!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in 2..=6 {
+        assert!(
+            stdout.contains(&format!("demo/notes.txt:{line}")),
+            "stdout: {stdout}"
+        );
+    }
+    assert_clean(&output);
+    assert_clean_tokens(&output);
+
+    // The registry commands never print a token either.
+    let output = run(&["catalog", "registry", path]);
+    assert_ne!(output.status.code(), Some(0));
+    assert_clean_tokens(&output);
+
+    let output = run(&["catalog", "registry", path, "--write"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_clean_tokens(&output);
+
+    // An unknown option is echoed back, but never as a secret.
+    for token in TOKENS {
+        let output = run(&["catalog", "check", path, &format!("--{token}")]);
+        assert_ne!(output.status.code(), Some(0));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("unknown option `<redacted>`"), "{stderr}");
+        assert!(!stderr.contains(token), "stderr: {stderr}");
+    }
+}
+
 /// Run the built binary with the given arguments.
 fn run(args: &[&str]) -> Output {
     Command::new(BINARY)
@@ -96,6 +145,16 @@ fn assert_clean(output: &Output) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stdout.contains(SECRET), "stdout: {stdout}");
     assert!(!stderr.contains(SECRET), "stderr: {stderr}");
+}
+
+/// Assert that neither stream of the command holds a token of any shape.
+fn assert_clean_tokens(output: &Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for token in TOKENS {
+        assert!(!stdout.contains(token), "stdout: {stdout}");
+        assert!(!stderr.contains(token), "stderr: {stderr}");
+    }
 }
 
 /// A skills directory whose frontmatter name, link target, file name and
@@ -127,6 +186,47 @@ fn secret_fixture(name: &str) -> PathBuf {
             "| Skill | When to read | Entrypoint |\n",
             "| --- | --- | --- |\n",
             "| Broken | When breaking | AKIAIOSFODNN7EXAMPLE |\n",
+        ),
+    );
+    dir
+}
+
+/// A skills directory that holds a token of every shape.
+///
+/// The tokens live in a note of the demo skill and in a row of the registry,
+/// so both the check and the registry command have to hide them.
+fn secret_shapes_fixture(name: &str) -> PathBuf {
+    let dir = temp_dir(name);
+    write(
+        &dir.join("demo/SKILL.md"),
+        concat!(
+            "---\n",
+            "name: Demo\n",
+            "description: A demo skill.\n",
+            "---\n",
+            "\n",
+            "# Demo\n",
+        ),
+    );
+    write(
+        &dir.join("demo/notes.txt"),
+        concat!(
+            "keys:\n",
+            "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n",
+            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345\n",
+            "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz\n",
+            "glpat-abcdefghijklmnopqrstuvwxyz0123456789\n",
+            "AIzaSyA1234567890abcdefghijklmnopqrstuv\n",
+        ),
+    );
+    write(
+        &dir.join("SKILL_REGISTRY.md"),
+        concat!(
+            "# Skills\n",
+            "\n",
+            "| Skill | When to read | Entrypoint |\n",
+            "| --- | --- | --- |\n",
+            "| Leaked | When leaking | sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 |\n",
         ),
     );
     dir
