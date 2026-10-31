@@ -1,7 +1,7 @@
 ---
 title: skrun
 repo: ..
-commit: 01db79576dcf7cf3db823c7120fc51515aa1db00
+commit: 46fffa397056884f0ca9e4162748b32948760a3d
 remote: https://github.com/lhwzds/skrun
 lang: en
 max_pages: 8

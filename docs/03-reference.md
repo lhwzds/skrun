@@ -37,11 +37,11 @@ Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<
 | `registry <dir>` | `--registry` (`<dir>/SKILL_REGISTRY.md`), `--write` | without `--write`, the table drifted; always, the file is missing, has no table, or cannot be read or written |
 | `check <dir>` | `--registry`, `--index` | any error |
 
-`check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a registry without the table or drifted, a `skills.json` differing from a fresh index, and a line that looks like a private key or an AWS, OpenAI, GitHub or Slack token. Its one warning: a frontmatter `name` differing from the directory name. Registry and index are checked when present at the default path or passed.
+`check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a registry without the table or drifted, a `skills.json` differing from a fresh index, and a line holding a secret (below). Its one warning: a frontmatter `name` differing from the directory name. Registry and index are checked when at the default path or passed.
 
-`check` and `registry` print user text (names, link targets, paths, malformed rows, unknown options) matching those patterns as `<redacted>` (`redact`); a secret finding gives only `path:line`, the path masked too. `skills.json` keeps real paths ([How It Works](04-how-it-works.md)).
+Secrets are private-key blocks and tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`. `check` and `registry` print matching user text (names, link targets, paths, rows, options) as `<redacted>` (`redact`); a secret finding gives only `path:line`, the path masked too. `skills.json` keeps real paths ([How It Works](04-how-it-works.md)).
 
-<sub>Sources: [main.rs:130-152](../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../crates/skrun/src/catalog.rs#L353-L400) · +4</sub>
+<sub>Sources: [main.rs:130-152](../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../crates/skrun/src/catalog.rs#L353-L400) · +5</sub>
 
 ## Environment and default paths
 

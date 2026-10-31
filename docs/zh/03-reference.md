@@ -37,11 +37,11 @@ skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 
 | `registry <dir>` | `--registry`（`<dir>/SKILL_REGISTRY.md`）、`--write` | 不带 `--write` 时：表格有偏差；任何模式下：文件不存在、没有表格，或无法读写 |
 | `check <dir>` | `--registry`、`--index` | 有任何错误 |
 
-`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及看起来像私钥或 AWS、OpenAI、GitHub、Slack 令牌的行。唯一的警告是 frontmatter `name` 与目录名不同。注册表和索引在默认路径存在或显式传入时才检查。
+`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及含密钥的行（见下）。唯一的警告是 frontmatter `name` 与目录名不同。注册表和索引在位于默认路径或显式传入时才检查。
 
-`check` 和 `registry` 打印的用户文本（名称、链接目标、路径、格式错误的行、未知选项）若匹配上述模式，会经 `redact` 显示为 `<redacted>`；密钥发现只给出 `path:line`，路径同样会被遮蔽。`skills.json` 保留真实路径（[工作原理](04-how-it-works.md)）。
+密钥指私钥块，以及以 `AKIA`、`sk-`（含 `sk-proj-`、`sk-ant-`）、`gh[pousr]_`、`github_pat_`、`glpat-`、`xox[baprs]-` 或 `AIza` 开头的令牌。`check` 和 `registry` 打印的用户文本（名称、链接目标、路径、行、选项）若匹配，会经 `redact` 显示为 `<redacted>`；密钥发现只给出 `path:line`，路径同样会被遮蔽。`skills.json` 保留真实路径（[工作原理](04-how-it-works.md)）。
 
-<sub>来源: [main.rs:130-152](../../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../../crates/skrun/src/catalog.rs#L353-L400) · +4</sub>
+<sub>来源: [main.rs:130-152](../../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../../crates/skrun/src/catalog.rs#L353-L400) · +5</sub>
 
 ## 环境变量与默认路径
 

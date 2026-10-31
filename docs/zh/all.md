@@ -179,11 +179,11 @@ skill 命令都在 `skrun skill` 下；`skrun catalog` 见下文。位置参数 
 | `registry <dir>` | `--registry`（`<dir>/SKILL_REGISTRY.md`）、`--write` | 不带 `--write` 时：表格有偏差；任何模式下：文件不存在、没有表格，或无法读写 |
 | `check <dir>` | `--registry`、`--index` | 有任何错误 |
 
-`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及看起来像私钥或 AWS、OpenAI、GitHub、Slack 令牌的行。唯一的警告是 frontmatter `name` 与目录名不同。注册表和索引在默认路径存在或显式传入时才检查。
+`check` 报为错误的有：缺少 frontmatter `name` 或 `description` 的文件夹 skill、失效的相对链接、没有表格或有偏差的注册表、与新生成索引不一致的 `skills.json`，以及含密钥的行（见下）。唯一的警告是 frontmatter `name` 与目录名不同。注册表和索引在位于默认路径或显式传入时才检查。
 
-`check` 和 `registry` 打印的用户文本（名称、链接目标、路径、格式错误的行、未知选项）若匹配上述模式，会经 `redact` 显示为 `<redacted>`；密钥发现只给出 `path:line`，路径同样会被遮蔽。`skills.json` 保留真实路径（[工作原理](#how-it-works)）。
+密钥指私钥块，以及以 `AKIA`、`sk-`（含 `sk-proj-`、`sk-ant-`）、`gh[pousr]_`、`github_pat_`、`glpat-`、`xox[baprs]-` 或 `AIza` 开头的令牌。`check` 和 `registry` 打印的用户文本（名称、链接目标、路径、行、选项）若匹配，会经 `redact` 显示为 `<redacted>`；密钥发现只给出 `path:line`，路径同样会被遮蔽。`skills.json` 保留真实路径（[工作原理](#how-it-works)）。
 
-<sub>来源: [main.rs:130-152](../../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../../crates/skrun/src/catalog.rs#L353-L400) · +4</sub>
+<sub>来源: [main.rs:130-152](../../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../../crates/skrun/src/catalog.rs#L353-L400) · +5</sub>
 
 ### 环境变量与默认路径
 
@@ -328,11 +328,11 @@ stdout 和 stderr 只在进程退出后才收集。以下未经测试，仅根�
 
 ### 为什么 catalog 的输出是确定的
 
-`catalog` 从不运行 skill，不调用 git，也不访问网络；只有 `registry --write` 和 `index --out` 会写文件。`build_index` 按 id 排序 skill、按路径排序脚本，不记录时间戳或绝对路径。每个 skill 记录：frontmatter（`name`、`description`、`version`、`tags`、`requires`）、入口文件 `bytes`、脚本（`.py`、`.sh`、`.js`/`.mjs`、`.ts`；Python 脚本附带顶层导入）以及相对链接和各目标是否存在。输入不变时 `skills.json` 也不变，`check` 据此可以发现过期的副本。它是数据，从不遮蔽：frontmatter 原样复制，路径也保留，提交前请检查这两者。
+`catalog` 从不运行 skill，不调用 git，也不访问网络；只有 `registry --write` 和 `index --out` 会写文件。`build_index` 按 id 排序 skill、按路径排序脚本，不记录时间戳或绝对路径。每个 skill 记录：frontmatter（`name`、`description`、`version`、`tags`、`requires`）、入口文件 `bytes`、脚本（`.py`、`.sh`、`.js`/`.mjs`、`.ts`；Python 脚本附带顶层导入）以及相对链接和各目标是否存在。输入相同，`skills.json` 就相同，所以 `check` 能发现过期的副本。这里不做任何遮蔽：提交前请检查 frontmatter 和路径。
 
-`reconcile_registry` 把 `SKILL_REGISTRY.md` 当作人工维护的文本。它在围栏代码块（反引号或 `~~~` 围栏）之外查找 `| Skill | When to read | Entrypoint |` 表格，所以围栏里的示例表格永远不会被改写。它原样按顺序保留有效的行，删除入口缺失、不是 skill 或重复的行，并为未登记的 skill 追加 `| name | summary | [id](entrypoint) |`，summary 取描述的第一句（最多 160 个字符）。单元格支持 `\|` 和双反斜杠转义，生成的单元格也这样转义，所以行可以原样往返；带对齐冒号的分隔行（`:---:`）保持不变。其他行和换行符保持不变；没有表格时直接报错，不写入文件。
+`reconcile_registry` 把 `SKILL_REGISTRY.md` 当作人工维护的文本，只改动围栏代码块（反引号或 `~~~`，列表项和引用块中的也算；信息串中含反引号的行是行内代码）之外的 `| Skill | When to read | Entrypoint |` 表格。有效的行原样按顺序保留；入口缺失、不是 skill 或重复的行被删除；未登记的 skill 追加 `| name | summary | [id](entrypoint) |`，summary 取描述的第一句（≤160 个字符）。单元格支持 `\|` 和 `\\` 转义；含括号、空格、`<` 或 `>` 的路径写成 `[id](<path>)`；两种写法都能解析，所以行可以原样往返（含 `>` 的路径暂不支持）。对齐分隔行、其他行和换行符保持不变；没有表格时直接报错，不写入文件。
 
-<sub>来源: [catalog.rs:12-16](../../crates/skrun/src/catalog.rs#L12-L16) · [catalog.rs:403-435](../../crates/skrun/src/catalog.rs#L403-L435) · [catalog.rs:464-568](../../crates/skrun/src/catalog.rs#L464-L568) · [catalog.rs:1209-1252](../../crates/skrun/src/catalog.rs#L1209-L1252) · [catalog.rs:845-893](../../crates/skrun/src/catalog.rs#L845-L893) · +4</sub>
+<sub>来源: [catalog.rs:12-16](../../crates/skrun/src/catalog.rs#L12-L16) · [catalog.rs:403-435](../../crates/skrun/src/catalog.rs#L403-L435) · [catalog.rs:464-568](../../crates/skrun/src/catalog.rs#L464-L568) · [catalog.rs:1299-1342](../../crates/skrun/src/catalog.rs#L1299-L1342) · [catalog.rs:845-893](../../crates/skrun/src/catalog.rs#L845-L893) · +5</sub>
 
 <a id="contributing"></a>
 
@@ -388,7 +388,7 @@ runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must
 
 本页由 Codocia 根据代码自动生成，每次 build 重新计算：功能区划分、各区自带的说明、区之间的 import 依赖，以及讲解各区的页面。
 
-范围内共 51 个文件，7,571 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
+范围内共 51 个文件，7,984 行；已排除 `docs/**`、`python/tests/**`、`**/tests/**`、`Cargo.lock`、`.github/dependabot.yml`、`examples/skills/cdp-browser/src/**`、`.gitattributes`、`.gitignore`、`LICENSE`
 
 ### 文件结构
 
@@ -412,7 +412,7 @@ runtime、CLI、绑定和 SDK 模块开头都有一段文档头（`Owns`、`Must
 
 - （直接文件） — 19 行，1 个文件。Public API for the skrun executable skill runtime.\
   讲解：[快速上手](#getting-started) (1)
-- `src/` — 5,169 行，4 个文件。Public API for the skrun executable skill runtime.\
+- `src/` — 5,582 行，4 个文件。Public API for the skrun executable skill runtime.\
   核心文件：`catalog.rs` `lib.rs` `runtime.rs`\
   讲解：[概览](#overview) (3), [快速上手](#getting-started) (3), [参考](#reference) (7), [工作原理](#how-it-works) (7), [参与开发](#contributing) (1)
 

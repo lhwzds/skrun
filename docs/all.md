@@ -179,11 +179,11 @@ Skill commands live under `skrun skill`; `skrun catalog` is below. Positional `<
 | `registry <dir>` | `--registry` (`<dir>/SKILL_REGISTRY.md`), `--write` | without `--write`, the table drifted; always, the file is missing, has no table, or cannot be read or written |
 | `check <dir>` | `--registry`, `--index` | any error |
 
-`check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a registry without the table or drifted, a `skills.json` differing from a fresh index, and a line that looks like a private key or an AWS, OpenAI, GitHub or Slack token. Its one warning: a frontmatter `name` differing from the directory name. Registry and index are checked when present at the default path or passed.
+`check` errors on: a folder skill missing frontmatter `name` or `description`, a broken relative link, a registry without the table or drifted, a `skills.json` differing from a fresh index, and a line holding a secret (below). Its one warning: a frontmatter `name` differing from the directory name. Registry and index are checked when at the default path or passed.
 
-`check` and `registry` print user text (names, link targets, paths, malformed rows, unknown options) matching those patterns as `<redacted>` (`redact`); a secret finding gives only `path:line`, the path masked too. `skills.json` keeps real paths ([How It Works](#how-it-works)).
+Secrets are private-key blocks and tokens starting `AKIA`, `sk-` (incl. `sk-proj-`, `sk-ant-`), `gh[pousr]_`, `github_pat_`, `glpat-`, `xox[baprs]-` or `AIza`. `check` and `registry` print matching user text (names, link targets, paths, rows, options) as `<redacted>` (`redact`); a secret finding gives only `path:line`, the path masked too. `skills.json` keeps real paths ([How It Works](#how-it-works)).
 
-<sub>Sources: [main.rs:130-152](../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../crates/skrun/src/catalog.rs#L353-L400) · +4</sub>
+<sub>Sources: [main.rs:130-152](../crates/skrun/src/main.rs#L130-L152) · [main.rs:508-556](../crates/skrun/src/main.rs#L508-L556) · [main.rs:435-506](../crates/skrun/src/main.rs#L435-L506) · [catalog.rs:60-66](../crates/skrun/src/catalog.rs#L60-L66) · [catalog.rs:353-400](../crates/skrun/src/catalog.rs#L353-L400) · +5</sub>
 
 ### Environment and default paths
 
@@ -328,11 +328,11 @@ Both build steps capture output and report only stderr on failure. `markdown` sk
 
 ### Why catalog output is deterministic
 
-`catalog` never runs skills, calls git or the network; only `registry --write` and `index --out` write. `build_index` sorts skills by id and scripts by path, with no timestamps or absolute paths. Per skill: frontmatter (`name`, `description`, `version`, `tags`, `requires`), entrypoint `bytes`, scripts (`.py`, `.sh`, `.js`/`.mjs`, `.ts`; Python with top-level imports) and relative links with whether each target exists. Unchanged input yields an identical `skills.json`, letting `check` flag a stale copy. It is data and never redacted: frontmatter is copied verbatim and paths kept, so check both before committing.
+`catalog` never runs skills, calls git or the network; only `registry --write` and `index --out` write. `build_index` sorts skills by id and scripts by path, with no timestamps or absolute paths. Per skill: frontmatter (`name`, `description`, `version`, `tags`, `requires`), entrypoint `bytes`, scripts (`.py`, `.sh`, `.js`/`.mjs`, `.ts`; Python with top-level imports) and relative links with whether each target exists. Same input, same `skills.json`, so `check` flags a stale copy. Nothing is redacted: review frontmatter and paths before committing.
 
-`reconcile_registry` treats `SKILL_REGISTRY.md` as curated text. It finds the `| Skill | When to read | Entrypoint |` table outside fenced code blocks (backtick or `~~~` fences), so fenced examples are never rewritten. It keeps valid rows verbatim and in order, drops rows with a missing, non-skill or repeated entrypoint, and appends `| name | summary | [id](entrypoint) |` for unlisted skills, summarised as the description's first sentence (max 160 characters). Cells honour `\|` and doubled-backslash escapes, which generated cells also write, so rows round-trip; an aligned separator (`:---:`) is kept. Other lines and endings stay; with no table it fails without writing.
+`reconcile_registry` treats `SKILL_REGISTRY.md` as curated text and edits only the `| Skill | When to read | Entrypoint |` table outside fenced code (backtick or `~~~`, also in lists and quotes; a backtick in the info string means inline code). Valid rows stay verbatim, in order; rows with a missing, non-skill or repeated entrypoint go; unlisted skills get `| name | summary | [id](entrypoint) |`, summarised by the description's first sentence (≤160 characters). Cells honour `\|` and `\\` escapes; a path with parentheses, spaces, `<` or `>` is written `[id](<path>)`; both forms parse, so rows round-trip (a path with `>` not yet). Aligned separators, other lines and endings stay; with no table it fails without writing.
 
-<sub>Sources: [catalog.rs:12-16](../crates/skrun/src/catalog.rs#L12-L16) · [catalog.rs:403-435](../crates/skrun/src/catalog.rs#L403-L435) · [catalog.rs:464-568](../crates/skrun/src/catalog.rs#L464-L568) · [catalog.rs:1209-1252](../crates/skrun/src/catalog.rs#L1209-L1252) · [catalog.rs:845-893](../crates/skrun/src/catalog.rs#L845-L893) · +4</sub>
+<sub>Sources: [catalog.rs:12-16](../crates/skrun/src/catalog.rs#L12-L16) · [catalog.rs:403-435](../crates/skrun/src/catalog.rs#L403-L435) · [catalog.rs:464-568](../crates/skrun/src/catalog.rs#L464-L568) · [catalog.rs:1299-1342](../crates/skrun/src/catalog.rs#L1299-L1342) · [catalog.rs:845-893](../crates/skrun/src/catalog.rs#L845-L893) · +5</sub>
 
 <a id="contributing"></a>
 
@@ -388,7 +388,7 @@ The runtime, CLI, binding and SDK modules open with a doc header (`Owns`, `Must 
 
 Generated by Codocia from the code on every build: areas, each area's own description, import dependencies between areas, and the pages that explain them.
 
-In scope: 51 files, 7,571 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
+In scope: 51 files, 7,984 lines; excluded `docs/**`, `python/tests/**`, `**/tests/**`, `Cargo.lock`, `.github/dependabot.yml`, `examples/skills/cdp-browser/src/**`, `.gitattributes`, `.gitignore`, `LICENSE`
 
 ### Files
 
@@ -412,7 +412,7 @@ In scope: 51 files, 7,571 lines; excluded `docs/**`, `python/tests/**`, `**/test
 
 - (files) — 19 lines, 1 file. Public API for the skrun executable skill runtime.\
   Explained in: [Getting Started](#getting-started) (1)
-- `src/` — 5,169 lines, 4 files. Public API for the skrun executable skill runtime.\
+- `src/` — 5,582 lines, 4 files. Public API for the skrun executable skill runtime.\
   Hub files: `catalog.rs` `lib.rs` `runtime.rs`\
   Explained in: [Overview](#overview) (3), [Getting Started](#getting-started) (3), [Reference](#reference) (7), [How It Works](#how-it-works) (7), [Contributing](#contributing) (1)
 
