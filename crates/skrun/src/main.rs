@@ -40,6 +40,7 @@ use skrun::{
 };
 use std::env;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -63,13 +64,17 @@ fn run(args: Vec<String>) -> Result<()> {
                 "Created {} skill `{}` at {}",
                 kind_label(&artifact.kind),
                 artifact.id,
-                options.dir.display()
+                catalog::redact_path(&options.dir)
             );
             Ok(())
         }
         Command::Skill(SkillCommand::Build(options)) => {
             let artifact = build_skill(&options.dir, &options.build)?;
-            println!("Built skill `{}` at {}", artifact.id, options.dir.display());
+            println!(
+                "Built skill `{}` at {}",
+                artifact.id,
+                catalog::redact_path(&options.dir)
+            );
             Ok(())
         }
         Command::Skill(SkillCommand::Run(options)) => {
@@ -86,7 +91,7 @@ fn run(args: Vec<String>) -> Result<()> {
             println!(
                 "Installed skill `{}` into {}",
                 artifact.id,
-                options.install.root.display()
+                catalog::redact_path(&options.install.root)
             );
             Ok(())
         }
@@ -137,14 +142,9 @@ fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Command::Catalog(CatalogCommand::Check(options)) => {
-            let report = catalog::check_catalog(
-                &options.dir,
-                options.registry.as_deref(),
-                options.index.as_deref(),
-            )?;
-            print!("{}", report.render());
-            if report.has_errors() {
-                std::process::exit(1);
+            let code = run_catalog_check(&options)?;
+            if code != 0 {
+                std::process::exit(code);
             }
             Ok(())
         }
@@ -253,7 +253,7 @@ fn parse(args: Vec<String>) -> Result<Command> {
     match cursor.next_required("command")?.as_str() {
         "skill" => parse_skill(cursor).map(Command::Skill),
         "catalog" => parse_catalog(cursor).map(Command::Catalog),
-        other => bail!("unknown command `{other}`"),
+        other => bail!("unknown command `{}`", catalog::redact(other)),
     }
 }
 
@@ -265,7 +265,7 @@ fn parse_skill(mut cursor: Cursor) -> Result<SkillCommand> {
         "install-local" => parse_skill_install_local(cursor).map(SkillCommand::InstallLocal),
         "list" => parse_skill_list(cursor).map(SkillCommand::List),
         "show" => parse_skill_show(cursor).map(SkillCommand::Show),
-        other => bail!("unknown skill command `{other}`"),
+        other => bail!("unknown skill command `{}`", catalog::redact(other)),
     }
 }
 
@@ -282,7 +282,7 @@ fn parse_skill_new(mut cursor: Cursor) -> Result<NewCommand> {
             "--id" => id = Some(cursor.next_required("--id value")?),
             "--name" => name = Some(cursor.next_required("--name value")?),
             "--version" => version = cursor.next_required("--version value")?,
-            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
             value => dir = Some(PathBuf::from(value)),
         }
     }
@@ -312,7 +312,7 @@ fn parse_skill_build(mut cursor: Cursor) -> Result<BuildCommand> {
             }
             "--cargo" => build.cargo = OsString::from(cursor.next_required("--cargo value")?),
             "--uv" => build.uv = OsString::from(cursor.next_required("--uv value")?),
-            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
             value => dir = Some(PathBuf::from(value)),
         }
     }
@@ -349,7 +349,7 @@ fn parse_skill_run(mut cursor: Cursor) -> Result<RunCommand> {
             "--uv" => run.uv = OsString::from(cursor.next_required("--uv value")?),
             "--id" => id = Some(cursor.next_required("--id value")?),
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
-            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
             value => dir = Some(PathBuf::from(value)),
         }
     }
@@ -378,7 +378,7 @@ fn parse_skill_install_local(mut cursor: Cursor) -> Result<InstallLocalCommand> 
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
             "--id" => skill_id = Some(cursor.next_required("--id value")?),
             "--overwrite" => overwrite = true,
-            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
             value => source = Some(PathBuf::from(value)),
         }
     }
@@ -402,7 +402,7 @@ fn parse_skill_list(mut cursor: Cursor) -> Result<ListCommand> {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
             "--format" => format = parse_output_format(&cursor.next_required("--format value")?)?,
-            value => bail!("unknown argument `{value}`"),
+            value => bail!("unknown argument `{}`", catalog::redact(value)),
         }
     }
     Ok(ListCommand {
@@ -419,7 +419,9 @@ fn parse_skill_show(mut cursor: Cursor) -> Result<ShowCommand> {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(cursor.next_required("--root value")?)),
             "--format" => format = parse_output_format(&cursor.next_required("--format value")?)?,
-            value if value.starts_with('-') => bail!("unknown argument `{value}`"),
+            value if value.starts_with('-') => {
+                bail!("unknown argument `{}`", catalog::redact(value))
+            }
             value => id = Some(value.to_string()),
         }
     }
@@ -435,7 +437,7 @@ fn parse_catalog(mut cursor: Cursor) -> Result<CatalogCommand> {
         "index" => parse_catalog_index(cursor).map(CatalogCommand::Index),
         "registry" => parse_catalog_registry(cursor).map(CatalogCommand::Registry),
         "check" => parse_catalog_check(cursor).map(CatalogCommand::Check),
-        other => bail!("unknown catalog command `{other}`"),
+        other => bail!("unknown catalog command `{}`", catalog::redact(other)),
     }
 }
 
@@ -446,7 +448,7 @@ fn parse_catalog_index(mut cursor: Cursor) -> Result<CatalogIndexCommand> {
     while let Some(arg) = cursor.next() {
         match arg.as_str() {
             "--out" => out = Some(PathBuf::from(cursor.next_required("--out value")?)),
-            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
             value => dir = Some(PathBuf::from(value)),
         }
     }
@@ -468,7 +470,7 @@ fn parse_catalog_registry(mut cursor: Cursor) -> Result<CatalogRegistryCommand> 
                 registry = Some(PathBuf::from(cursor.next_required("--registry value")?))
             }
             "--write" => write = true,
-            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
             value => dir = Some(PathBuf::from(value)),
         }
     }
@@ -491,7 +493,7 @@ fn parse_catalog_check(mut cursor: Cursor) -> Result<CatalogCheckCommand> {
                 registry = Some(PathBuf::from(cursor.next_required("--registry value")?))
             }
             "--index" => index = Some(PathBuf::from(cursor.next_required("--index value")?)),
-            value if value.starts_with('-') => bail!("unknown option `{value}`"),
+            value if value.starts_with('-') => bail!("unknown option `{}`", catalog::redact(value)),
             value => dir = Some(PathBuf::from(value)),
         }
     }
@@ -513,13 +515,44 @@ fn parse_catalog_check(mut cursor: Cursor) -> Result<CatalogCheckCommand> {
 /// A registry file without the registry table is a real error as well: the
 /// command fails with a clear message and the file stays untouched.
 fn run_catalog_registry(options: &CatalogRegistryCommand) -> Result<i32> {
+    let mut stdout = std::io::stdout().lock();
+    run_catalog_registry_to(options, &mut stdout)
+}
+
+/// Run the `catalog registry` command and write its report to `out`.
+///
+/// The report is the only thing the command prints; the status follows the
+/// mode.
+fn run_catalog_registry_to(options: &CatalogRegistryCommand, out: &mut dyn Write) -> Result<i32> {
     let registry = options
         .registry
         .clone()
         .unwrap_or_else(|| options.dir.join(catalog::REGISTRY_FILE));
     let report = catalog::reconcile_registry(&options.dir, &registry, options.write)?;
-    print!("{}", report.render());
+    write!(out, "{}", report.render())?;
+    out.flush()?;
     Ok(report.exit_code(options.write))
+}
+
+/// Run the `catalog check` command and return its exit status.
+///
+/// The report is the only thing the command prints; the status is 1 when the
+/// check found an error.
+fn run_catalog_check(options: &CatalogCheckCommand) -> Result<i32> {
+    let mut stdout = std::io::stdout().lock();
+    run_catalog_check_to(options, &mut stdout)
+}
+
+/// Run the `catalog check` command and write its report to `out`.
+fn run_catalog_check_to(options: &CatalogCheckCommand, out: &mut dyn Write) -> Result<i32> {
+    let report = catalog::check_catalog(
+        &options.dir,
+        options.registry.as_deref(),
+        options.index.as_deref(),
+    )?;
+    write!(out, "{}", report.render())?;
+    out.flush()?;
+    Ok(if report.has_errors() { 1 } else { 0 })
 }
 
 /// Render the output of the `catalog index` command.
@@ -546,7 +579,7 @@ fn parse_kind(value: &str) -> Result<ArtifactKind> {
         "markdown" | "guidance" => Ok(ArtifactKind::Markdown),
         "rust_binary" => Ok(ArtifactKind::RustBinary),
         "python_uv" => Ok(ArtifactKind::PythonUv),
-        other => bail!("unknown skill kind `{other}`"),
+        other => bail!("unknown skill kind `{}`", catalog::redact(other)),
     }
 }
 
@@ -576,7 +609,7 @@ fn parse_output_format(value: &str) -> Result<OutputFormat> {
     match value {
         "text" => Ok(OutputFormat::Text),
         "json" => Ok(OutputFormat::Json),
-        other => bail!("unknown output format `{other}`"),
+        other => bail!("unknown output format `{}`", catalog::redact(other)),
     }
 }
 
@@ -625,6 +658,9 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A key shaped value that must never reach the command output.
+    const SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
 
     #[test]
     fn parses_skill_new_command() {
@@ -788,6 +824,40 @@ mod tests {
     }
 
     #[test]
+    fn catalog_commands_redact_an_unknown_option() {
+        for command in ["index", "registry", "check"] {
+            let error = parse(vec![
+                "catalog".to_string(),
+                command.to_string(),
+                "skills".to_string(),
+                format!("--{SECRET}"),
+            ])
+            .unwrap_err();
+
+            let printed = format!("{error:#}");
+            assert!(!printed.contains(SECRET), "{printed}");
+            assert!(printed.contains("unknown option `<redacted>`"), "{printed}");
+        }
+    }
+
+    #[test]
+    fn catalog_commands_redact_an_unknown_command() {
+        let error = parse(vec![
+            "catalog".to_string(),
+            SECRET.to_string(),
+            "skills".to_string(),
+        ])
+        .unwrap_err();
+
+        let printed = format!("{error:#}");
+        assert!(!printed.contains(SECRET), "{printed}");
+        assert!(
+            printed.contains("unknown catalog command `<redacted>`"),
+            "{printed}"
+        );
+    }
+
+    #[test]
     fn catalog_index_with_out_prints_nothing() {
         let dir = temp_dir("catalog-index-out");
         write(
@@ -892,6 +962,210 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("read registry"));
+    }
+
+    #[test]
+    fn catalog_check_never_prints_a_secret() {
+        let dir = secret_fixture("catalog-check-secret");
+        let mut out = Vec::new();
+
+        let code = run_catalog_check_to(
+            &CatalogCheckCommand {
+                dir: dir.clone(),
+                registry: None,
+                index: None,
+            },
+            &mut out,
+        )
+        .unwrap();
+
+        let printed = String::from_utf8(out).unwrap();
+        assert_eq!(code, 1);
+        assert!(!printed.contains(SECRET), "{printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
+        // The finding keeps the location of the secret, never its value.
+        assert!(
+            printed.contains("possible secret in `demo/SKILL.md:2`"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("has frontmatter name `<redacted>`"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("has a broken link `<redacted>`"),
+            "{printed}"
+        );
+    }
+
+    #[test]
+    fn catalog_registry_never_prints_a_secret() {
+        let dir = secret_fixture("catalog-registry-secret");
+        let mut out = Vec::new();
+
+        let code = run_catalog_registry_to(
+            &CatalogRegistryCommand {
+                dir: dir.clone(),
+                registry: None,
+                write: false,
+            },
+            &mut out,
+        )
+        .unwrap();
+
+        let printed = String::from_utf8(out).unwrap();
+        assert_eq!(code, 1);
+        assert!(!printed.contains(SECRET), "{printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
+    }
+
+    #[test]
+    fn catalog_registry_error_never_prints_a_secret() {
+        let dir = secret_fixture("catalog-registry-error");
+        let registry = dir.join(SECRET);
+        fs::write(&registry, "# Skills\n").unwrap();
+
+        let error = run_catalog_registry_to(
+            &CatalogRegistryCommand {
+                dir: dir.clone(),
+                registry: Some(registry.clone()),
+                write: false,
+            },
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        let printed = format!("{error:#}");
+        assert!(!printed.contains(SECRET), "{printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
+    }
+
+    #[test]
+    fn catalog_check_and_dry_run_do_not_write_files() {
+        let dir = drifted_registry_fixture("catalog-no-write");
+        let before = snapshot(&dir);
+        let mut out = Vec::new();
+
+        run_catalog_check_to(
+            &CatalogCheckCommand {
+                dir: dir.clone(),
+                registry: None,
+                index: None,
+            },
+            &mut out,
+        )
+        .unwrap();
+        run_catalog_registry_to(
+            &CatalogRegistryCommand {
+                dir: dir.clone(),
+                registry: None,
+                write: false,
+            },
+            &mut out,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot(&dir), before);
+    }
+
+    #[test]
+    fn catalog_registry_round_trips_a_pipe_in_the_skill_name() {
+        let dir = temp_dir("catalog-registry-pipe");
+        write(
+            &dir.join("pipe/SKILL.md"),
+            "---\nname: Pipe | Skill\ndescription: A | B summary.\n---\n\n# Pipe\n",
+        );
+        write(
+            &dir.join(catalog::REGISTRY_FILE),
+            "# Skills\n\n| Skill | When to read | Entrypoint |\n| --- | --- | --- |\n",
+        );
+        let mut out = Vec::new();
+
+        let code = run_catalog_registry_to(
+            &CatalogRegistryCommand {
+                dir: dir.clone(),
+                registry: None,
+                write: true,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let registry = fs::read_to_string(dir.join(catalog::REGISTRY_FILE)).unwrap();
+        assert!(
+            registry.contains("| Pipe \\| Skill | A \\| B summary. | [pipe](pipe/SKILL.md) |"),
+            "{registry}"
+        );
+
+        let code = run_catalog_registry_to(
+            &CatalogRegistryCommand {
+                dir: dir.clone(),
+                registry: None,
+                write: false,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+    }
+
+    /// A skills directory whose frontmatter name, link target and registry row
+    /// all hold a key shaped value.
+    fn secret_fixture(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        write(
+            &dir.join("demo/SKILL.md"),
+            concat!(
+                "---\n",
+                "name: Demo AKIAIOSFODNN7EXAMPLE\n",
+                "description: A demo skill.\n",
+                "---\n",
+                "\n",
+                "# Demo\n",
+                "\n",
+                "Read the [missing page](docs/AKIAIOSFODNN7EXAMPLE.md).\n",
+            ),
+        );
+        write(
+            &dir.join(catalog::REGISTRY_FILE),
+            concat!(
+                "# Skills\n",
+                "\n",
+                "| Skill | When to read | Entrypoint |\n",
+                "| --- | --- | --- |\n",
+                "| Broken | When breaking | AKIAIOSFODNN7EXAMPLE |\n",
+                "| Also broken | AKIAIOSFODNN7EXAMPLE |\n",
+            ),
+        );
+        dir
+    }
+
+    /// Every file of a directory with its content, sorted by path.
+    fn snapshot(root: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut files = Vec::new();
+        collect_files(root, root, &mut files);
+        files.sort();
+        files
+    }
+
+    fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files(root, &path, out);
+            } else {
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                out.push((name, fs::read(&path).unwrap_or_default()));
+            }
+        }
     }
 
     fn registry_without_table_fixture(name: &str) -> PathBuf {

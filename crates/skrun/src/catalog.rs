@@ -7,12 +7,15 @@
 //! - deterministic JSON catalog index
 //! - `SKILL_REGISTRY.md` reconciliation
 //! - catalog consistency checks
+//! - redaction of every printed value that looks like a secret
 //!
 //! ## Must Not
 //! - execute skills
 //! - mutate skill payloads
 //! - create a registry table that is not there
 //! - call git or the network
+//! - print a value that looks like a secret
+//! - read the registry table out of a fenced code block
 //!
 //! ## Inputs
 //! - skills directory
@@ -67,6 +70,9 @@ const SUMMARY_LIMIT: usize = 160;
 
 /// Exact line that opens and closes a frontmatter block.
 const FRONTMATTER_DELIMITER: &str = "---";
+
+/// Placeholder that replaces user text that looks like a secret.
+const REDACTED: &str = "<redacted>";
 
 /// How a skill is stored inside the skills directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -232,9 +238,12 @@ impl RegistryReport {
     }
 
     /// Render the report as deterministic text.
+    ///
+    /// Every user controlled text goes through the redaction helper, so a
+    /// value that looks like a secret never reaches the output.
     pub fn render(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("registry: {}\n", self.label));
+        out.push_str(&format!("registry: {}\n", redact(&self.label)));
         out.push_str(&format!(
             "status: {}\n",
             if self.out_of_sync() {
@@ -244,16 +253,24 @@ impl RegistryReport {
             }
         ));
         for row in &self.removed {
-            out.push_str(&format!("stale row ({}): {}\n", row.reason, row.entrypoint));
+            out.push_str(&format!(
+                "stale row ({}): {}\n",
+                row.reason,
+                redact(&row.entrypoint)
+            ));
         }
         for entrypoint in &self.duplicates {
-            out.push_str(&format!("duplicate row: {}\n", entrypoint));
+            out.push_str(&format!("duplicate row: {}\n", redact(entrypoint)));
         }
         for row in &self.missing {
-            out.push_str(&format!("missing row: {} ({})\n", row.id, row.entrypoint));
+            out.push_str(&format!(
+                "missing row: {} ({})\n",
+                redact(&row.id),
+                redact(&row.entrypoint)
+            ));
         }
         if self.updated {
-            out.push_str(&format!("updated registry: {}\n", self.label));
+            out.push_str(&format!("updated registry: {}\n", redact(&self.label)));
         }
         out
     }
@@ -334,12 +351,13 @@ impl CheckReport {
 /// Folder skills are immediate subdirectories with a `SKILL.md` file, flat
 /// skills are top level markdown files. The result is sorted by skill id.
 pub fn discover_skills(dir: &Path) -> Result<Vec<Skill>> {
-    let entries =
-        fs::read_dir(dir).with_context(|| format!("read skills directory `{}`", dir.display()))?;
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("read skills directory `{}`", redact_path(dir)))?;
     let mut skills = Vec::new();
 
     for entry in entries {
-        let entry = entry.with_context(|| format!("read skills directory `{}`", dir.display()))?;
+        let entry =
+            entry.with_context(|| format!("read skills directory `{}`", redact_path(dir)))?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
         let metadata = match fs::metadata(&path) {
@@ -430,9 +448,9 @@ pub fn write_index_file(path: &Path, text: &str) -> Result<()> {
         && !parent.exists()
     {
         fs::create_dir_all(parent)
-            .with_context(|| format!("create directory `{}`", parent.display()))?;
+            .with_context(|| format!("create directory `{}`", redact_path(parent)))?;
     }
-    fs::write(path, text).with_context(|| format!("write index `{}`", path.display()))
+    fs::write(path, text).with_context(|| format!("write index `{}`", redact_path(path)))
 }
 
 /// Reconcile the registry table with the discovered skills.
@@ -464,7 +482,7 @@ fn reconcile_document(
     let Some((header, start, end)) = document.table() else {
         bail!(
             "registry `{}` has no `{}` table",
-            registry.display(),
+            redact_path(registry),
             REGISTRY_HEADER
         );
     };
@@ -539,7 +557,7 @@ fn reconcile_document(
 
     Ok(RegistryReport {
         registry: registry.to_path_buf(),
-        label: display_path(dir, registry),
+        label: redact(&display_path(dir, registry)),
         removed,
         duplicates,
         missing,
@@ -566,18 +584,19 @@ pub fn check_catalog(
         match &skill.frontmatter.name {
             None => findings.push(Finding::error(format!(
                 "skill `{}` is missing frontmatter `name`",
-                skill.id
+                redact(&skill.id)
             ))),
             Some(name) if name != &skill.id => findings.push(Finding::warning(format!(
-                "skill `{}` has frontmatter name `{name}` that differs from its id",
-                skill.id
+                "skill `{}` has frontmatter name `{}` that differs from its id",
+                redact(&skill.id),
+                redact(name)
             ))),
             Some(_) => {}
         }
         if skill.frontmatter.description.is_none() {
             findings.push(Finding::error(format!(
                 "skill `{}` is missing frontmatter `description`",
-                skill.id
+                redact(&skill.id)
             )));
         }
     }
@@ -587,7 +606,8 @@ pub fn check_catalog(
             if !link.exists {
                 findings.push(Finding::error(format!(
                     "skill `{}` has a broken link `{}`",
-                    skill.id, link.target
+                    redact(&skill.id),
+                    redact(&link.target)
                 )));
             }
         }
@@ -605,7 +625,7 @@ pub fn check_catalog(
         }
     };
     if let Some(path) = registry_path {
-        let label = display_path(dir, &path);
+        let label = redact(&display_path(dir, &path));
         if path.exists() {
             let content = read_registry(&path)?;
             let document = RegistryDocument::parse(&content);
@@ -628,8 +648,12 @@ pub fn check_catalog(
     }
 
     for (path, line) in scan_secrets(dir)? {
+        // The path goes through the same redaction helper as every other
+        // printed value, so a secret shaped file or directory name is hidden.
         findings.push(Finding::error(format!(
-            "possible secret in `{path}:{line}`"
+            "possible secret in `{}:{}`",
+            redact(&path),
+            line
         )));
     }
 
@@ -782,11 +806,12 @@ fn collect_scripts(dir: &Path, skill: &Skill) -> Result<Vec<ScriptInfo>> {
 }
 
 fn walk_script_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let entries =
-        fs::read_dir(root).with_context(|| format!("read skill directory `{}`", root.display()))?;
+    let entries = fs::read_dir(root)
+        .with_context(|| format!("read skill directory `{}`", redact_path(root)))?;
     let mut paths = Vec::new();
     for entry in entries {
-        let entry = entry.with_context(|| format!("read skill directory `{}`", root.display()))?;
+        let entry =
+            entry.with_context(|| format!("read skill directory `{}`", redact_path(root)))?;
         paths.push(entry.path());
     }
     paths.sort();
@@ -916,14 +941,22 @@ fn registry_row(skill: &Skill) -> String {
         .name
         .clone()
         .unwrap_or_else(|| skill.id.clone());
+    let title = escape_cell(&title);
     let summary = summary_of(skill.frontmatter.description.as_deref());
-    format!(
-        "| {} | {} | [{}]({}) |",
-        title,
-        summary,
-        skill.id,
-        path_to_string(&skill.entrypoint)
-    )
+    let id = escape_cell(&skill.id);
+    let entrypoint = escape_cell(&path_to_string(&skill.entrypoint));
+    format!("| {} | {} | [{}]({}) |", title, summary, id, entrypoint)
+}
+
+/// Escape a cell so the text stays inside its table cell.
+///
+/// A backslash is written as `\\` and a pipe as `\|`; the backslash is
+/// escaped first, so a text that already holds an escaped pipe keeps its
+/// literal pipe. A pipe that is written as `\|` is part of the cell text and
+/// never ends the cell, so a title or a summary with a pipe keeps its own
+/// cell.
+fn escape_cell(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('|', "\\|")
 }
 
 fn summary_of(description: Option<&str>) -> String {
@@ -940,10 +973,11 @@ fn summary_of(description: Option<&str>) -> String {
     if let Some(position) = text.find('\n') {
         cut = cut.min(position);
     }
-    let mut summary = text[..cut].trim().replace('|', "/");
+    let mut summary = text[..cut].trim().to_string();
     if summary.chars().count() > SUMMARY_LIMIT {
         summary = summary.chars().take(SUMMARY_LIMIT).collect();
     }
+    let summary = escape_cell(&summary);
     if summary.is_empty() {
         "(no description)".to_string()
     } else {
@@ -990,10 +1024,11 @@ fn scan_secrets(dir: &Path) -> Result<Vec<(String, usize)>> {
 
 fn walk_text_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let entries = fs::read_dir(root)
-        .with_context(|| format!("read skills directory `{}`", root.display()))?;
+        .with_context(|| format!("read skills directory `{}`", redact_path(root)))?;
     let mut paths = Vec::new();
     for entry in entries {
-        let entry = entry.with_context(|| format!("read skills directory `{}`", root.display()))?;
+        let entry =
+            entry.with_context(|| format!("read skills directory `{}`", redact_path(root)))?;
         paths.push(entry.path());
     }
     paths.sort();
@@ -1022,6 +1057,23 @@ fn walk_text_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Hide text that looks like a secret before it is printed.
+///
+/// Every user controlled text that the catalog commands print goes through
+/// this helper, so a value that looks like a key never reaches the output.
+/// The finding itself keeps the location of the secret, never its value.
+///
+/// This is the one redaction helper of the crate. Printed values and printed
+/// paths alike go through it, so a secret shaped file or directory name is
+/// printed as `<redacted>`.
+pub fn redact(text: &str) -> String {
+    if line_has_secret(text) {
+        REDACTED.to_string()
+    } else {
+        text.to_string()
+    }
 }
 
 fn line_has_secret(line: &str) -> bool {
@@ -1156,8 +1208,12 @@ struct RegistryDocument {
 impl RegistryDocument {
     fn parse(content: &str) -> Self {
         let lines = split_lines(content);
+        let fenced = fenced_lines(&lines);
         let mut header = None;
         for (index, line) in lines.iter().enumerate() {
+            if fenced[index] {
+                continue;
+            }
             if line.text.trim() == REGISTRY_HEADER {
                 header = Some(index);
                 break;
@@ -1171,14 +1227,16 @@ impl RegistryDocument {
             // separator ends the table right after the header.
             let mut start = position + 1;
             if let Some(next) = lines.get(start)
+                && !fenced[start]
                 && next.text.starts_with('|')
                 && is_separator(&next.text)
             {
                 start += 1;
             }
-            // Data rows end at the first line that does not start with `|`.
+            // Data rows end at the first line that does not start with `|`; a
+            // fenced code block never holds table rows.
             let mut end = start;
-            while end < lines.len() && lines[end].text.starts_with('|') {
+            while end < lines.len() && !fenced[end] && lines[end].text.starts_with('|') {
                 end += 1;
             }
             data_start = Some(start);
@@ -1203,12 +1261,92 @@ impl RegistryDocument {
     }
 }
 
+/// A markdown code fence that opens or closes a fenced code block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fence {
+    /// The fence character, either a backtick or a tilde.
+    marker: char,
+    /// How many times the marker is repeated on the fence line.
+    length: usize,
+}
+
+impl Fence {
+    /// The fence that opens on `text`, when the line opens a code block.
+    ///
+    /// A fence is a line that starts with three or more backticks or tildes;
+    /// it may be indented by up to three spaces.
+    fn opening(text: &str) -> Option<Self> {
+        let rest = strip_fence_indent(text)?;
+        let marker = rest.chars().next()?;
+        if marker != '`' && marker != '~' {
+            return None;
+        }
+        let length = rest.chars().take_while(|c| *c == marker).count();
+        if length < 3 {
+            return None;
+        }
+        Some(Fence { marker, length })
+    }
+
+    /// Whether `text` closes a block that was opened by this fence.
+    ///
+    /// The closing fence uses the same character, is at least as long as the
+    /// opening fence and holds nothing but the fence itself.
+    fn closes(&self, text: &str) -> bool {
+        let Some(rest) = strip_fence_indent(text) else {
+            return false;
+        };
+        let length = rest.chars().take_while(|c| *c == self.marker).count();
+        length >= self.length && rest[length..].trim().is_empty()
+    }
+}
+
+/// The text of a line without its leading fence indentation.
+///
+/// A fence may be indented by up to three spaces; a deeper indentation is an
+/// indented code block and never opens a fence.
+fn strip_fence_indent(text: &str) -> Option<&str> {
+    let spaces = text.chars().take_while(|c| *c == ' ').count();
+    if spaces > 3 {
+        return None;
+    }
+    Some(&text[spaces..])
+}
+
+/// Mark every line that belongs to a fenced code block.
+///
+/// The fence markers themselves stay unmarked: they never look like a table
+/// row, so only the lines between them have to be skipped.
+fn fenced_lines(lines: &[Line]) -> Vec<bool> {
+    let mut fenced = vec![false; lines.len()];
+    let mut index = 0;
+    while index < lines.len() {
+        let Some(fence) = Fence::opening(&lines[index].text) else {
+            index += 1;
+            continue;
+        };
+        let mut end = index + 1;
+        while end < lines.len() && !fence.closes(&lines[end].text) {
+            end += 1;
+        }
+        for slot in fenced.iter_mut().take(end).skip(index + 1) {
+            *slot = true;
+        }
+        // Skip the closing fence; an unclosed fence runs to the end of the
+        // document.
+        index = end + 1;
+    }
+    fenced
+}
+
 /// Read the registry file; a missing file reads as empty content.
 fn read_registry(registry: &Path) -> Result<String> {
     match fs::read_to_string(registry) {
         Ok(content) => Ok(content),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(error) => Err(error).with_context(|| format!("read registry `{}`", registry.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("read registry `{}`", redact_path(registry)))
+        }
     }
 }
 
@@ -1242,20 +1380,57 @@ fn split_lines(content: &str) -> Vec<Line> {
 
 fn is_separator(text: &str) -> bool {
     let cells = parse_cells(text);
-    !cells.is_empty()
-        && cells
-            .iter()
-            .all(|cell| cell.len() >= 3 && cell.chars().all(|character| character == '-'))
+    !cells.is_empty() && cells.iter().all(|cell| is_separator_cell(cell))
+}
+
+/// Whether a cell is a markdown separator cell such as `---` or `:---:`.
+///
+/// A separator cell is three or more dashes with an optional colon on either
+/// side, so an aligned table such as `| :--- | ---: | :---: |` counts too.
+fn is_separator_cell(cell: &str) -> bool {
+    let cell = cell.trim();
+    let core = cell.strip_prefix(':').unwrap_or(cell);
+    let core = core.strip_suffix(':').unwrap_or(core);
+    core.len() >= 3 && core.chars().all(|character| character == '-')
 }
 
 fn parse_cells(text: &str) -> Vec<String> {
     let trimmed = text.trim();
     let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
     let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner
-        .split('|')
-        .map(|cell| cell.trim().to_string())
-        .collect()
+    split_cells(inner)
+}
+
+/// Split a table row into its cells.
+///
+/// Only a pipe that is not escaped as `\|` ends a cell; an escaped pipe stays
+/// part of the cell text. A `\\` is a literal backslash and a `\|` is a
+/// literal pipe, so a cell reads back as the text it was written from.
+fn split_cells(text: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut characters = text.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => match characters.next() {
+                Some('\\') => current.push('\\'),
+                Some('|') => current.push('|'),
+                Some(other) => {
+                    // An unknown escape keeps its backslash.
+                    current.push('\\');
+                    current.push(other);
+                }
+                None => current.push('\\'),
+            },
+            '|' => {
+                cells.push(current.trim().to_string());
+                current = String::new();
+            }
+            _ => current.push(character),
+        }
+    }
+    cells.push(current.trim().to_string());
+    cells
 }
 
 fn extract_link_path(cell: &str) -> Option<String> {
@@ -1302,7 +1477,8 @@ fn write_registry(
         content.push_str(&line_ending);
     }
 
-    fs::write(registry, content).with_context(|| format!("write registry `{}`", registry.display()))
+    fs::write(registry, content)
+        .with_context(|| format!("write registry `{}`", redact_path(registry)))
 }
 
 fn detect_ending(lines: &[Line]) -> String {
@@ -1358,6 +1534,15 @@ fn path_to_string(path: &Path) -> String {
         }
     }
     parts.join("/")
+}
+
+/// Render a path for a message, with a secret looking path hidden.
+///
+/// The path goes through the same redaction helper as every other printed
+/// value, so a secret shaped file or directory name is printed as
+/// `<redacted>`.
+pub fn redact_path(path: &Path) -> String {
+    redact(&path.display().to_string())
 }
 
 fn display_path(dir: &Path, path: &Path) -> String {
@@ -1852,6 +2037,348 @@ mod tests {
 
         let unterminated = parse_frontmatter("---\nname: Demo\ndescription: Demo helper.\n");
         assert_eq!(unterminated, Frontmatter::default());
+    }
+
+    #[test]
+    fn registry_ignores_fenced_code_blocks() {
+        let dir = temp_dir("registry-fence");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        let fence = concat!(
+            "```markdown\n",
+            "| Skill | When to read | Entrypoint |\n",
+            "| --- | --- | --- |\n",
+            "| Fake | When faking | [fake](fake/SKILL.md) |\n",
+            "```\n",
+        );
+        let table = concat!(
+            "| Skill | When to read | Entrypoint |\n",
+            "| --- | --- | --- |\n",
+            "| Ghost | When ghosting | [ghost](ghost/SKILL.md) |\n",
+        );
+        write(
+            &registry,
+            &format!("# Skills\n\n{fence}\n{table}\nTrailing text.\n"),
+        );
+
+        let report = reconcile_registry(&dir, &registry, true).unwrap();
+
+        // Only the real table is reconciled; the fenced rows are not rows.
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].entrypoint, "ghost/SKILL.md");
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(report.missing[0].entrypoint, "demo/SKILL.md");
+
+        let after = fs::read_to_string(&registry).unwrap();
+        // The fenced example keeps its bytes.
+        assert!(after.contains(fence), "{after}");
+        assert!(
+            after.contains("| Demo | A demo skill. | [demo](demo/SKILL.md) |"),
+            "{after}"
+        );
+        assert!(after.ends_with("\nTrailing text.\n"), "{after}");
+    }
+
+    #[test]
+    fn registry_ignores_tilde_and_indented_fences() {
+        let dir = temp_dir("registry-tilde-fence");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        let fence = concat!(
+            "  ~~~\n",
+            "| Skill | When to read | Entrypoint |\n",
+            "| Fake | When faking | [fake](fake/SKILL.md) |\n",
+            "  ~~~\n",
+        );
+        let table = concat!(
+            "| Skill | When to read | Entrypoint |\n",
+            "| --- | --- | --- |\n",
+            "| Ghost | When ghosting | [ghost](ghost/SKILL.md) |\n",
+        );
+        write(
+            &registry,
+            &format!("# Skills\n\n{fence}\n{table}\nTrailing text.\n"),
+        );
+
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].entrypoint, "ghost/SKILL.md");
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(report.missing[0].entrypoint, "demo/SKILL.md");
+    }
+
+    #[test]
+    fn registry_accepts_an_aligned_separator_row() {
+        let dir = temp_dir("registry-aligned-separator");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        write(
+            &dir.join("extra/SKILL.md"),
+            "---\nname: Extra\ndescription: An extra skill.\n---\n\n# Extra\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        let separator = "| :--- | ---: | :---: |\n";
+        write(
+            &registry,
+            &format!(
+                "# Skills\n\n| Skill | When to read | Entrypoint |\n{separator}| Demo | When demoing | [demo](demo/SKILL.md) |\n"
+            ),
+        );
+
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+
+        // The aligned separator is a separator, not a row of its own.
+        assert!(report.removed.is_empty());
+        assert_eq!(report.kept, vec!["demo/SKILL.md".to_string()]);
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(report.missing[0].entrypoint, "extra/SKILL.md");
+
+        reconcile_registry(&dir, &registry, true).unwrap();
+
+        let after = fs::read_to_string(&registry).unwrap();
+        // The separator row keeps its bytes.
+        assert!(after.contains(separator), "{after}");
+        assert!(
+            after.contains("| Extra | An extra skill. | [extra](extra/SKILL.md) |"),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn table_cells_read_escaped_pipes_and_backslashes() {
+        // An escaped pipe is a literal pipe and never ends the cell.
+        let cells = parse_cells(r"| a \| b | c |");
+        assert_eq!(cells, vec!["a | b".to_string(), "c".to_string()]);
+
+        // An escaped backslash is a literal backslash.
+        let cells = parse_cells(r"| a \\ b | c |");
+        assert_eq!(cells, vec![r"a \ b".to_string(), "c".to_string()]);
+
+        // An escaped escaped pipe is a literal backslash and a literal pipe.
+        let cells = parse_cells(r"| a \\\| b | c |");
+        assert_eq!(cells, vec![r"a \| b".to_string(), "c".to_string()]);
+
+        let cells = parse_cells("| plain | [demo](demo/SKILL.md) |");
+        assert_eq!(
+            cells,
+            vec!["plain".to_string(), "[demo](demo/SKILL.md)".to_string()]
+        );
+    }
+
+    #[test]
+    fn registry_rows_keep_escaped_pipes_inside_a_cell() {
+        let dir = temp_dir("registry-escaped-pipe");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            concat!(
+                "# Skills\n\n",
+                "| Skill | When to read | Entrypoint |\n",
+                "| --- | --- | --- |\n",
+                "| Pipe \\| Skill | When piping | [demo](demo/SKILL.md) |\n",
+            ),
+        );
+
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+
+        assert!(!report.out_of_sync());
+        assert!(report.removed.is_empty());
+        assert_eq!(report.kept, vec!["demo/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn registry_escapes_pipes_in_generated_rows() {
+        let dir = temp_dir("registry-pipe");
+        write(
+            &dir.join("pipe/SKILL.md"),
+            "---\nname: Pipe | Skill\ndescription: A | B summary.\n---\n\n# Pipe\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            "# Skills\n\n| Skill | When to read | Entrypoint |\n| --- | --- | --- |\n",
+        );
+
+        reconcile_registry(&dir, &registry, true).unwrap();
+
+        let after = fs::read_to_string(&registry).unwrap();
+        assert!(
+            after.contains("| Pipe \\| Skill | A \\| B summary. | [pipe](pipe/SKILL.md) |"),
+            "{after}"
+        );
+
+        // The written row parses back into the same three cells.
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+        assert!(!report.out_of_sync());
+        assert_eq!(report.exit_code(false), 0);
+        assert_eq!(report.kept, vec!["pipe/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn redact_hides_secret_shaped_text() {
+        assert_eq!(redact("plain text"), "plain text");
+        assert_eq!(redact(""), "");
+        assert_eq!(redact(SECRET), REDACTED);
+        assert_eq!(redact(&format!("name: {SECRET}")), REDACTED);
+        assert_eq!(redact(&format!("docs/{SECRET}.md")), REDACTED);
+    }
+
+    #[test]
+    fn check_redacts_secret_shaped_names_and_links() {
+        let dir = temp_dir("check-redact");
+        write(
+            &dir.join("demo/SKILL.md"),
+            concat!(
+                "---\n",
+                "name: Demo AKIAIOSFODNN7EXAMPLE\n",
+                "description: A demo skill.\n",
+                "---\n",
+                "\n",
+                "# Demo\n",
+                "\n",
+                "Read the [missing page](docs/AKIAIOSFODNN7EXAMPLE.md).\n",
+            ),
+        );
+
+        let report = check_catalog(&dir, None, None).unwrap();
+        let text = report.render();
+
+        assert!(!text.contains(SECRET), "{text}");
+        assert!(text.contains("has frontmatter name `<redacted>`"), "{text}");
+        assert!(text.contains("has a broken link `<redacted>`"), "{text}");
+        // The secret finding keeps the location, never the value.
+        assert!(
+            text.contains("possible secret in `demo/SKILL.md:2`"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn registry_report_redacts_secret_shaped_rows() {
+        let dir = temp_dir("registry-report-redact");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Demo\ndescription: A demo skill.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            concat!(
+                "# Skills\n\n",
+                "| Skill | When to read | Entrypoint |\n",
+                "| --- | --- | --- |\n",
+                "| Broken | When breaking | AKIAIOSFODNN7EXAMPLE |\n",
+            ),
+        );
+
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+        let text = report.render();
+
+        assert!(!text.contains(SECRET), "{text}");
+        assert!(
+            text.contains("stale row (invalid entrypoint cell): <redacted>"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn check_redacts_secret_shaped_paths() {
+        let dir = temp_dir("check-redact-path");
+        // A file whose name looks like a secret.
+        write(
+            &dir.join(format!("{SECRET}.md")),
+            "the key is AKIAIOSFODNN7EXAMPLE\n",
+        );
+        // A directory whose name looks like a secret.
+        write(
+            &dir.join(format!("{SECRET}-dir/notes.md")),
+            "the key is AKIAIOSFODNN7EXAMPLE\n",
+        );
+
+        let report = check_catalog(&dir, None, None).unwrap();
+        let text = report.render();
+
+        assert!(!text.contains(SECRET), "{text}");
+        assert!(text.contains("<redacted>"), "{text}");
+        // The finding keeps the line, never the secret shaped name.
+        assert!(text.contains("possible secret in `<redacted>:1`"), "{text}");
+    }
+
+    #[test]
+    fn registry_escapes_backslashes_in_generated_rows() {
+        let dir = temp_dir("registry-backslash");
+        write(
+            &dir.join("demo/SKILL.md"),
+            "---\nname: Back \\ Slash | Pipe\ndescription: A \\ B summary.\n---\n\n# Demo\n",
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            "# Skills\n\n| Skill | When to read | Entrypoint |\n| --- | --- | --- |\n",
+        );
+
+        reconcile_registry(&dir, &registry, true).unwrap();
+
+        let after = fs::read_to_string(&registry).unwrap();
+        assert!(
+            after.contains(r"| Back \\ Slash \| Pipe | A \\ B summary. | [demo](demo/SKILL.md) |"),
+            "{after}"
+        );
+
+        // The written row reads back as the same three cells.
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+        assert!(!report.out_of_sync());
+        assert_eq!(report.exit_code(false), 0);
+        assert_eq!(report.kept, vec!["demo/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn registry_round_trips_a_title_with_pipes_and_backslashes() {
+        let dir = temp_dir("registry-round-trip");
+        write(
+            &dir.join("demo/SKILL.md"),
+            concat!(
+                "---\n",
+                "name: Pipe \\| Skill | Second\n",
+                "description: A summary with \\| and |.\n",
+                "---\n",
+                "\n",
+                "# Demo\n",
+            ),
+        );
+        let registry = dir.join(REGISTRY_FILE);
+        write(
+            &registry,
+            "# Skills\n\n| Skill | When to read | Entrypoint |\n| --- | --- | --- |\n",
+        );
+
+        reconcile_registry(&dir, &registry, true).unwrap();
+
+        let after = fs::read_to_string(&registry).unwrap();
+        assert!(
+            after.contains(r"| Pipe \\\| Skill \| Second | A summary with \\\| and \|. | [demo](demo/SKILL.md) |"),
+            "{after}"
+        );
+
+        // The written row reads back as the same three cells, so the table
+        // is in sync and a dry run succeeds.
+        let report = reconcile_registry(&dir, &registry, false).unwrap();
+        assert!(!report.out_of_sync());
+        assert_eq!(report.exit_code(false), 0);
+        assert_eq!(report.kept, vec!["demo/SKILL.md".to_string()]);
     }
 
     #[test]
