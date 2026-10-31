@@ -5,6 +5,7 @@
 
 pub mod catalog;
 pub mod runtime;
+pub mod store;
 
 pub use runtime::{
     ArtifactKind, ArtifactProtocol, ArtifactSchema, ArtifactSource, BuildOptions, InstallOptions,

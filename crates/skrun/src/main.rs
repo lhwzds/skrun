@@ -8,6 +8,7 @@
 //! - skill artifact run command
 //! - local skill install and list commands
 //! - catalog index, registry and check commands
+//! - catalog add and inspect commands
 //!
 //! ## Must Not
 //! - start the legacy daemon
@@ -33,6 +34,7 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use skrun::catalog;
+use skrun::store;
 use skrun::{
     ArtifactKind, BuildOptions, InstallOptions, RunOptions, ScaffoldOptions, build_skill,
     default_skills_dir, install_local_skill, list_installed_skills, load_artifact, run_skill,
@@ -196,6 +198,15 @@ fn run(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
+
+        Command::Catalog(CatalogCommand::Add(options)) => {
+            run_catalog_add(&options)?;
+            Ok(())
+        }
+        Command::Catalog(CatalogCommand::Inspect(options)) => {
+            run_catalog_inspect(&options)?;
+            Ok(())
+        }
     }
 }
 
@@ -222,6 +233,8 @@ enum CatalogCommand {
     Registry(CatalogRegistryCommand),
     Check(CatalogCheckCommand),
     Search(CatalogSearchCommand),
+    Add(CatalogAddCommand),
+    Inspect(CatalogInspectCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,6 +308,23 @@ struct CatalogSearchCommand {
     kind: Option<catalog::SkillKind>,
     has_scripts: bool,
     limit: usize,
+    json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogAddCommand {
+    source: PathBuf,
+    store: Option<PathBuf>,
+    id: Option<String>,
+    from: Option<String>,
+    json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogInspectCommand {
+    id: Option<String>,
+    store: Option<PathBuf>,
+    list: bool,
     json: bool,
 }
 
@@ -512,6 +542,8 @@ fn parse_catalog(mut cursor: Cursor) -> Result<CatalogCommand> {
         "registry" => parse_catalog_registry(cursor).map(CatalogCommand::Registry),
         "check" => parse_catalog_check(cursor).map(CatalogCommand::Check),
         "search" => parse_catalog_search(cursor).map(CatalogCommand::Search),
+        "add" => parse_catalog_add(cursor).map(CatalogCommand::Add),
+        "inspect" => parse_catalog_inspect(cursor).map(CatalogCommand::Inspect),
         other => usage(format!(
             "unknown catalog command `{}`",
             catalog::redact(other)
@@ -637,6 +669,85 @@ fn parse_catalog_search(mut cursor: Cursor) -> Result<CatalogSearchCommand> {
     })
 }
 
+/// Parse the `catalog add` command.
+///
+/// The source is a local skill directory or a zip archive. The store, the id
+/// and the provenance of the skill are optional.
+fn parse_catalog_add(mut cursor: Cursor) -> Result<CatalogAddCommand> {
+    let mut store = None;
+    let mut id = None;
+    let mut from = None;
+    let mut json = false;
+    let mut source = None;
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--store" => store = Some(PathBuf::from(cursor.next_required("--store value")?)),
+            "--id" => id = Some(cursor.next_required("--id value")?),
+            "--from" => from = Some(cursor.next_required("--from value")?),
+            "--json" => json = true,
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
+            value => {
+                if source.is_none() {
+                    source = Some(PathBuf::from(value));
+                } else {
+                    return usage("catalog add takes one source");
+                }
+            }
+        }
+    }
+
+    Ok(CatalogAddCommand {
+        source: source.ok_or_else(|| usage_error("missing source"))?,
+        store,
+        id,
+        from,
+        json,
+    })
+}
+
+/// Parse the `catalog inspect` command.
+///
+/// The command shows the record of one skill id, or the list of every stored
+/// id when `--list` is given.
+fn parse_catalog_inspect(mut cursor: Cursor) -> Result<CatalogInspectCommand> {
+    let mut store = None;
+    let mut id = None;
+    let mut list = false;
+    let mut json = false;
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--store" => store = Some(PathBuf::from(cursor.next_required("--store value")?)),
+            "--list" => list = true,
+            "--json" => json = true,
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
+            value => {
+                if id.is_none() {
+                    id = Some(value.to_string());
+                } else {
+                    return usage("catalog inspect takes one skill id");
+                }
+            }
+        }
+    }
+
+    if !list && id.is_none() {
+        return usage("missing skill id");
+    }
+
+    Ok(CatalogInspectCommand {
+        id,
+        store,
+        list,
+        json,
+    })
+}
+
 /// The kind of skill a search keeps.
 fn parse_search_kind(value: &str) -> Result<catalog::SkillKind> {
     match value {
@@ -740,6 +851,67 @@ fn run_catalog_check_to(options: &CatalogCheckCommand, out: &mut dyn Write) -> R
     Ok(if report.has_errors() { 1 } else { 0 })
 }
 
+/// Run the `catalog add` command.
+///
+/// The skill is copied into the store, hashed and scanned. Nothing of the
+/// skill is ever run, so an added skill is safe to look at.
+fn run_catalog_add(options: &CatalogAddCommand) -> Result<()> {
+    let result = store::add_skill(&store::AddOptions {
+        source: options.source.clone(),
+        store: options.store.clone(),
+        id: options.id.clone(),
+        from: options.from.clone(),
+    })?;
+    if options.json {
+        let value = serde_json::to_value(&result.version)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&store::redact_json_strings(&value))?
+        );
+    } else {
+        let state = if result.already_stored {
+            "already stored"
+        } else {
+            "stored"
+        };
+        println!(
+            "{} {} {} ({} files, {} findings)",
+            state,
+            catalog::redact(&result.id),
+            catalog::redact(&result.version.hash),
+            result.version.files,
+            result.version.findings.len()
+        );
+    }
+    Ok(())
+}
+
+/// Run the `catalog inspect` command.
+///
+/// The record of the skill is the only thing the command prints. A skill that
+/// was never added has no record, so the command fails.
+fn run_catalog_inspect(options: &CatalogInspectCommand) -> Result<()> {
+    let root = store::resolve_store_root(options.store.as_deref())?;
+    if options.list {
+        let summaries = store::list_records(&root)?;
+        if options.json {
+            println!("{}", serde_json::to_string_pretty(&summaries)?);
+        } else {
+            print!("{}", store::render_summaries(&summaries));
+        }
+        return Ok(());
+    }
+
+    let id = options.id.clone().unwrap_or_default();
+    let record = store::read_record(&root, &id)?;
+    if options.json {
+        print!("{}", store::redacted_record_json(&record)?);
+    } else {
+        print!("{}", store::render_record(&record));
+    }
+    Ok(())
+}
+
 /// Render the output of the `catalog index` command.
 ///
 /// Without `--out` the rendered index is returned for printing. With `--out`
@@ -838,6 +1010,9 @@ fn print_usage() {
   skrun catalog registry <dir> [--registry <file>] [--write]
   skrun catalog check <dir> [--registry <file>] [--index <file>]
   skrun catalog search <dir> <query>... [--kind folder|flat] [--has-scripts] [--limit N] [--json]
+  skrun catalog add <source> [--store <dir>] [--id <id>] [--from <provenance>] [--json]
+  skrun catalog inspect <id> [--store <dir>] [--json]
+  skrun catalog inspect --list [--store <dir>]
 "#
     );
 }
@@ -1010,6 +1185,80 @@ mod tests {
         assert_eq!(command.dir, PathBuf::from("skills"));
         assert_eq!(command.index, Some(PathBuf::from("skills.json")));
         assert_eq!(command.registry, None);
+    }
+
+    #[test]
+    fn parses_catalog_add_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "add".to_string(),
+            "skills/demo".to_string(),
+            "--store".to_string(),
+            "store".to_string(),
+            "--id".to_string(),
+            "demo".to_string(),
+            "--from".to_string(),
+            "https://example.com/repo".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Add(command)) = command else {
+            panic!("expected catalog add command");
+        };
+        assert_eq!(command.source, PathBuf::from("skills/demo"));
+        assert_eq!(command.store, Some(PathBuf::from("store")));
+        assert_eq!(command.id, Some("demo".to_string()));
+        assert_eq!(command.from, Some("https://example.com/repo".to_string()));
+        assert!(command.json);
+    }
+
+    #[test]
+    fn catalog_add_needs_a_source() {
+        let error = parse(vec!["catalog".to_string(), "add".to_string()]).unwrap_err();
+
+        let printed = format!("{error:#}");
+        assert!(printed.contains("missing source"), "{printed}");
+    }
+
+    #[test]
+    fn parses_catalog_inspect_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "inspect".to_string(),
+            "demo".to_string(),
+            "--store".to_string(),
+            "store".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Inspect(command)) = command else {
+            panic!("expected catalog inspect command");
+        };
+        assert_eq!(command.id, Some("demo".to_string()));
+        assert_eq!(command.store, Some(PathBuf::from("store")));
+        assert!(!command.list);
+        assert!(command.json);
+    }
+
+    #[test]
+    fn parses_catalog_inspect_list_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "inspect".to_string(),
+            "--list".to_string(),
+            "--store".to_string(),
+            "store".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Inspect(command)) = command else {
+            panic!("expected catalog inspect command");
+        };
+        assert!(command.list);
+        assert_eq!(command.id, None);
+        assert_eq!(command.store, Some(PathBuf::from("store")));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //!
 //! ## Owns
 //! - skill discovery for folder and flat skills
+//! - the parsing of the frontmatter of a skill
 //! - deterministic JSON catalog index
 //! - `SKILL_REGISTRY.md` reconciliation
 //! - catalog consistency checks
@@ -1072,6 +1073,9 @@ fn kind_name(kind: SkillKind) -> &'static str {
 ///
 /// The block only counts when its first line is exactly `---` and a later
 /// line is exactly `---` as well. An unterminated block is not frontmatter.
+///
+/// The values of the block are unquoted, so a name that is wrapped in
+/// quotes is the name without its quotes.
 pub fn parse_frontmatter(text: &str) -> Frontmatter {
     let mut frontmatter = Frontmatter::default();
     let mut lines = text.lines();
@@ -1094,9 +1098,9 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
         let key = key.trim().to_ascii_lowercase();
         let value = value.trim();
         match key.as_str() {
-            "name" => frontmatter.name = non_empty(value),
-            "description" => frontmatter.description = non_empty(value),
-            "version" => frontmatter.version = non_empty(value),
+            "name" => frontmatter.name = non_empty(&unquote_scalar(value)),
+            "description" => frontmatter.description = non_empty(&unquote_scalar(value)),
+            "version" => frontmatter.version = non_empty(&unquote_scalar(value)),
             "tags" => frontmatter.tags = parse_list(value),
             "requires" => frontmatter.requires = parse_list(value),
             _ => {}
@@ -1123,6 +1127,13 @@ fn non_empty(value: &str) -> Option<String> {
     }
 }
 
+/// Parse a frontmatter list value.
+///
+/// A list is written as `[a, b]` or as `a, b`. A comma that is inside a
+/// quoted item does not end the item, so `["one, two", three]` holds two
+/// items and not three.
+///
+/// Every item is unquoted, so a quoted item loses its quotes.
 fn parse_list(value: &str) -> Vec<String> {
     let trimmed = value.trim();
     let inner = if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
@@ -1130,12 +1141,113 @@ fn parse_list(value: &str) -> Vec<String> {
     } else {
         trimmed
     };
-    inner
-        .split(',')
-        .map(|item| item.trim().trim_matches('"').trim_matches('\'').trim())
+    split_list_items(inner)
+        .iter()
+        .map(|item| unquote_scalar(item))
         .filter(|item| !item.is_empty())
-        .map(str::to_string)
         .collect()
+}
+
+/// Split a list value into its items.
+///
+/// A comma ends an item, unless the comma is inside a quoted item. An item
+/// that starts with a double quote is a double quoted item and ends at its
+/// closing double quote, an item that starts with a single quote is a single
+/// quoted item and ends at its closing single quote.
+///
+/// Two single quotes inside a single quoted item are one quote that stays
+/// inside the item, and a backslash inside a double quoted item keeps the
+/// next character inside the item.
+fn split_list_items(value: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut item = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = value.chars().peekable();
+    while let Some(character) = chars.next() {
+        match quote {
+            Some('"') => {
+                item.push(character);
+                if character == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        item.push(escaped);
+                    }
+                    continue;
+                }
+                if character == '"' {
+                    quote = None;
+                }
+            }
+            Some('\'') => {
+                item.push(character);
+                if character == '\'' {
+                    if chars.peek() == Some(&'\'') {
+                        item.push(chars.next().unwrap_or('\''));
+                        continue;
+                    }
+                    quote = None;
+                }
+            }
+            _ => match character {
+                '"' | '\'' if item.trim().is_empty() => {
+                    quote = Some(character);
+                    item.push(character);
+                }
+                ',' => items.push(std::mem::take(&mut item)),
+                _ => item.push(character),
+            },
+        }
+    }
+    items.push(item);
+    items
+}
+
+/// Unquote a frontmatter scalar.
+///
+/// A value that is wrapped in matching double quotes or in matching single
+/// quotes loses its quotes. A double quoted value also unescapes `\"` and
+/// `\\`, a single quoted value turns `''` into a `'`.
+///
+/// A value that is not wrapped in matching quotes keeps its quotes, so a
+/// value that only starts with a quote is left as it is.
+pub fn unquote_scalar(value: &str) -> String {
+    let trimmed = value.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if first == b'"' && last == b'"' {
+            return unescape_double_quoted(&trimmed[1..trimmed.len() - 1]);
+        }
+        if first == b'\'' && last == b'\'' {
+            return trimmed[1..trimmed.len() - 1].replace("''", "'");
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Unescape the escapes of a double quoted scalar.
+///
+/// `\"` becomes a `"` and `\\` becomes a `\\`, every other escape is kept
+/// as it is.
+fn unescape_double_quoted(value: &str) -> String {
+    let mut text = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            text.push(character);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => text.push('"'),
+            Some('\\') => text.push('\\'),
+            Some(other) => {
+                text.push('\\');
+                text.push(other);
+            }
+            None => text.push('\\'),
+        }
+    }
+    text
 }
 
 fn is_flat_skill_file(name: &str) -> bool {
@@ -1217,7 +1329,7 @@ fn walk_script_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn script_language(path: &Path) -> Option<&'static str> {
+pub(crate) fn script_language(path: &Path) -> Option<&'static str> {
     match path.extension().and_then(|extension| extension.to_str()) {
         Some("py") => Some("python"),
         Some("sh") => Some("shell"),
@@ -1227,7 +1339,7 @@ fn script_language(path: &Path) -> Option<&'static str> {
     }
 }
 
-fn python_imports(text: &str) -> Vec<String> {
+pub(crate) fn python_imports(text: &str) -> Vec<String> {
     let mut imports = BTreeSet::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
@@ -1465,7 +1577,7 @@ pub fn redact(text: &str) -> String {
     }
 }
 
-fn line_has_secret(line: &str) -> bool {
+pub(crate) fn line_has_secret(line: &str) -> bool {
     has_private_key(line)
         || has_aws_key(line)
         || has_openai_key(line)
@@ -2656,6 +2768,102 @@ mod tests {
             frontmatter.requires,
             vec!["one".to_string(), "two".to_string()]
         );
+    }
+
+    #[test]
+    fn keeps_the_commas_of_a_quoted_list_item() {
+        let text = concat!(
+            "---\n",
+            "name: Demo\n",
+            "description: Demo helper.\n",
+            "tags: [\"one, two\", 'three', four]\n",
+            "requires: \"one, two\", three\n",
+            "---\n",
+            "body\n"
+        );
+
+        let frontmatter = parse_frontmatter(text);
+
+        assert_eq!(
+            frontmatter.tags,
+            vec![
+                "one, two".to_string(),
+                "three".to_string(),
+                "four".to_string()
+            ]
+        );
+        assert_eq!(
+            frontmatter.requires,
+            vec!["one, two".to_string(), "three".to_string()]
+        );
+    }
+
+    #[test]
+    fn unquotes_the_scalars_of_the_frontmatter() {
+        let text = concat!(
+            "---\n",
+            "name: \"jupyter-notebook\"\n",
+            "description: 'A quoted description.'\n",
+            "version: \"1.0.0\"\n",
+            "tags: [\"one\", 'two']\n",
+            "requires: [three]\n",
+            "---\n",
+            "body\n"
+        );
+
+        let frontmatter = parse_frontmatter(text);
+
+        assert_eq!(frontmatter.name.as_deref(), Some("jupyter-notebook"));
+        assert_eq!(
+            frontmatter.description.as_deref(),
+            Some("A quoted description.")
+        );
+        assert_eq!(frontmatter.version.as_deref(), Some("1.0.0"));
+        assert_eq!(frontmatter.tags, vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(frontmatter.requires, vec!["three".to_string()]);
+    }
+
+    #[test]
+    fn unquotes_the_escapes_of_a_double_quoted_scalar() {
+        let text = "---\nname: \"a \\\"b\\\" c\"\n---\n";
+
+        let frontmatter = parse_frontmatter(text);
+
+        assert_eq!(frontmatter.name.as_deref(), Some("a \"b\" c"));
+    }
+
+    #[test]
+    fn unquotes_the_escape_of_a_single_quoted_scalar() {
+        let text = "---\nname: 'it''s here'\n---\n";
+
+        let frontmatter = parse_frontmatter(text);
+
+        assert_eq!(frontmatter.name.as_deref(), Some("it's here"));
+    }
+
+    #[test]
+    fn keeps_a_scalar_that_is_not_wrapped_in_matching_quotes() {
+        assert_eq!(unquote_scalar("plain"), "plain");
+        assert_eq!(unquote_scalar("\"unbalanced"), "\"unbalanced");
+        assert_eq!(unquote_scalar("trailing\""), "trailing\"");
+        assert_eq!(unquote_scalar("\"mixed'"), "\"mixed'");
+        assert_eq!(unquote_scalar("'"), "'");
+        assert_eq!(unquote_scalar(""), "");
+    }
+
+    #[test]
+    fn the_index_holds_the_unquoted_name_of_a_skill() {
+        let dir = temp_dir("index-quoted-name");
+        write(
+            &dir.join("jupyter/SKILL.md"),
+            "---\nname: \"jupyter-notebook\"\ndescription: A notebook.\n---\n\n# Notebook\n",
+        );
+
+        let index = build_index(&dir).unwrap();
+        let text = render_index(&index).unwrap();
+
+        assert!(text.contains("\"jupyter-notebook\""), "{text}");
+        assert!(!text.contains("\\\"jupyter-notebook\\\""), "{text}");
     }
 
     #[test]
