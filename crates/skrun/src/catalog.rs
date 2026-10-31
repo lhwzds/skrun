@@ -917,20 +917,26 @@ fn collect_links(dir: &Path, skill: &Skill, text: &str) -> Vec<LinkInfo> {
         .collect()
 }
 
+/// The destinations of the markdown links in `text`.
+///
+/// The destinations are read with the same parser as the registry cells, so
+/// a link that writes its path between angle brackets and a link whose path
+/// holds parentheses both read back as the whole path.
 fn markdown_link_targets(text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
     let mut targets = Vec::new();
-    let mut index = 0;
-    while index + 1 < bytes.len() {
-        if bytes[index] == b']' && bytes[index + 1] == b'(' {
-            let start = index + 2;
-            if let Some(offset) = text[start..].find(')') {
-                targets.push(text[start..start + offset].to_string());
-                index = start + offset + 1;
-                continue;
+    let mut search = 0;
+    while let Some(offset) = text[search..].find("](") {
+        let start = search + offset + 2;
+        match parse_link_destination(&text[start..]) {
+            Some((target, length)) => {
+                targets.push(target);
+                search = start + length;
+            }
+            None => {
+                // The link holds no destination; look for the next link.
+                search = start;
             }
         }
-        index += 1;
     }
     targets
 }
@@ -1358,6 +1364,22 @@ struct Fence {
     marker: char,
     /// How many times the marker is repeated on the fence line.
     length: usize,
+    /// The block container that holds the fence.
+    container: Container,
+}
+
+/// The block container that holds a fence.
+///
+/// A fence sits at the top level of the document, in a list item or in a
+/// block quote. The container of the opening fence decides where a closing
+/// fence has to sit, so a fence in another container never closes the block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Container {
+    /// The number of block quote markers in front of the fence.
+    quotes: usize,
+    /// The column where the content of the container starts; the top level of
+    /// the document starts at column zero.
+    column: usize,
 }
 
 impl Fence {
@@ -1370,7 +1392,8 @@ impl Fence {
     /// A backtick fence may not hold a backtick in its info string: such a
     /// line is inline code, not a fence.
     fn opening(text: &str) -> Option<Self> {
-        let rest = strip_fence_prefix(text)?;
+        let prefix = parse_fence_prefix(text)?;
+        let rest = prefix.rest;
         let marker = rest.chars().next()?;
         if marker != '`' && marker != '~' {
             return None;
@@ -1384,24 +1407,73 @@ impl Fence {
         if marker == '`' && rest[length..].contains('`') {
             return None;
         }
-        Some(Fence { marker, length })
+        Some(Fence {
+            marker,
+            length,
+            container: Container {
+                quotes: prefix.quotes,
+                column: prefix.container_column,
+            },
+        })
     }
 
     /// Whether `text` closes a block that was opened by this fence.
     ///
     /// The closing fence uses the same character, is at least as long as the
-    /// opening fence and holds nothing but the fence itself. It may sit in
-    /// the same list item or block quote as the opening fence.
+    /// opening fence and holds nothing but the fence itself. It has to sit in
+    /// the same container as the opening fence.
     fn closes(&self, text: &str) -> bool {
-        let Some(rest) = strip_fence_prefix(text) else {
+        let Some(prefix) = parse_fence_prefix(text) else {
             return false;
         };
+        if !self.same_container(&prefix) {
+            return false;
+        }
+        let rest = prefix.rest;
         let length = rest.chars().take_while(|c| *c == self.marker).count();
         length >= self.length && rest[length..].trim().is_empty()
     }
+
+    /// Whether the fence of `prefix` sits in the container of the fence that
+    /// opened the block.
+    ///
+    /// The closing fence has to sit in the same block quote and in the same
+    /// list item as the opening fence, at the same place inside it. A fence
+    /// in another container never closes the block: a line such as "- ```"
+    /// inside a top level fence is content of that fence and not a closing
+    /// fence.
+    fn same_container(&self, prefix: &FencePrefix) -> bool {
+        // The closing fence sits in the same block quote.
+        if prefix.quotes != self.container.quotes {
+            return false;
+        }
+        // The closing fence does not open a list item of its own; a list
+        // marker belongs to another item than the opening fence.
+        if prefix.lists != 0 {
+            return false;
+        }
+        // The closing fence sits at the same place inside its container: at
+        // most three spaces behind the content of the container.
+        prefix.column >= self.container.column && prefix.column <= self.container.column + 3
+    }
 }
 
-/// The text of a line without the markers that may precede a fence.
+/// The container markers in front of a fence, with the text behind them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FencePrefix<'a> {
+    /// The number of block quote markers.
+    quotes: usize,
+    /// The number of list markers.
+    lists: usize,
+    /// The column where the content of the innermost container starts.
+    container_column: usize,
+    /// The column where `rest` starts.
+    column: usize,
+    /// The text behind the container markers.
+    rest: &'a str,
+}
+
+/// The container markers in front of a fence and the text behind them.
 ///
 /// A fence may be indented by up to three spaces and may live inside a list
 /// item or a block quote, so the list marker and the block quote marker are
@@ -1412,48 +1484,68 @@ impl Fence {
 /// `>` with the space behind it and the list marker is a dash with the space
 /// behind it. The space of a marker is not an indentation, so the three
 /// spaces of the indentation are free behind every marker.
-fn strip_fence_prefix(text: &str) -> Option<&str> {
+fn parse_fence_prefix(text: &str) -> Option<FencePrefix<'_>> {
     let mut rest = text;
+    let mut column = 0usize;
+    let mut quotes = 0usize;
+    let mut lists = 0usize;
+    let mut container_column = 0usize;
     loop {
         let spaces = rest.chars().take_while(|c| *c == ' ').count();
         if spaces > 3 {
             return None;
         }
         rest = &rest[spaces..];
+        column += spaces;
         // The block quote marker is a `>` with the space behind it; a `>`
         // without a space holds no space of its own.
         if let Some(stripped) = rest.strip_prefix("> ") {
             rest = stripped;
+            column += 2;
+            quotes += 1;
+            container_column = column;
             continue;
         }
         if let Some(stripped) = rest.strip_prefix('>') {
             rest = stripped;
+            column += 1;
+            quotes += 1;
+            container_column = column;
             continue;
         }
-        if let Some(stripped) = strip_list_marker(rest) {
-            rest = stripped;
+        if let Some(width) = list_marker_width(rest) {
+            rest = &rest[width..];
+            column += width;
+            lists += 1;
+            container_column = column;
             continue;
         }
-        return Some(rest);
+        return Some(FencePrefix {
+            quotes,
+            lists,
+            container_column,
+            column,
+            rest,
+        });
     }
 }
 
-/// The text after a leading list marker, when the line starts with one.
+/// The width of the list marker at the start of `text`, when it holds one.
 ///
 /// The markers are `- `, `* `, `+ ` and an ordered marker such as `1. ` or
 /// `1) `.
-fn strip_list_marker(text: &str) -> Option<&str> {
+fn list_marker_width(text: &str) -> Option<usize> {
     for marker in ["- ", "* ", "+ "] {
-        if let Some(rest) = text.strip_prefix(marker) {
-            return Some(rest);
+        if text.starts_with(marker) {
+            return Some(marker.len());
         }
     }
     let digits = text.chars().take_while(|c| c.is_ascii_digit()).count();
     if digits > 0 {
         let rest = &text[digits..];
         for marker in [". ", ") "] {
-            if let Some(rest) = rest.strip_prefix(marker) {
-                return Some(rest);
+            if rest.starts_with(marker) {
+                return Some(digits + marker.len());
             }
         }
     }
@@ -1587,14 +1679,23 @@ fn split_cells(text: &str) -> Vec<String> {
 /// the whole path.
 fn extract_link_path(cell: &str) -> Option<String> {
     let start = cell.find("](")? + 2;
-    let rest = &cell[start..];
-    if let Some(inner) = rest.strip_prefix('<') {
+    parse_link_destination(&cell[start..]).map(|(path, _)| path)
+}
+
+/// The destination of a markdown link and the number of bytes it takes.
+///
+/// Both `(path)` and `(<path>)` are accepted. A plain destination may hold
+/// balanced parentheses, so a path such as `demo(v2)/SKILL.md` reads back as
+/// the whole path. The angle brackets around a destination are not part of
+/// the path.
+fn parse_link_destination(text: &str) -> Option<(String, usize)> {
+    if let Some(inner) = text.strip_prefix('<') {
         let end = inner.find('>')?;
-        return Some(inner[..end].trim().to_string());
+        return Some((inner[..end].trim().to_string(), end + 2));
     }
     let mut depth = 0usize;
     let mut escaped = false;
-    for (index, character) in rest.char_indices() {
+    for (index, character) in text.char_indices() {
         if escaped {
             escaped = false;
             continue;
@@ -1604,7 +1705,7 @@ fn extract_link_path(cell: &str) -> Option<String> {
             '(' => depth += 1,
             ')' => {
                 if depth == 0 {
-                    return Some(rest[..index].trim().to_string());
+                    return Some((text[..index].trim().to_string(), index + 1));
                 }
                 depth -= 1;
             }
@@ -2713,6 +2814,29 @@ mod tests {
     }
 
     #[test]
+    fn a_fence_is_only_closed_by_its_own_container() {
+        let top = Fence::opening("```markdown").unwrap();
+        // A list item holds another container, so its fence is content of the
+        // top level fence and not a closing fence.
+        assert!(!top.closes("- ```"));
+        assert!(!top.closes("> ```"));
+        assert!(top.closes("```"));
+        assert!(top.closes("  ```"));
+
+        let list = Fence::opening("- ```markdown").unwrap();
+        // The fence of a list item is closed by a fence in the same item.
+        assert!(list.closes("  ```"));
+        assert!(!list.closes("```"));
+        assert!(!list.closes("- ```"));
+
+        let quote = Fence::opening("> ```markdown").unwrap();
+        // The fence of a block quote is closed by a fence in the same quote.
+        assert!(quote.closes("> ```"));
+        assert!(quote.closes(">    ```"));
+        assert!(!quote.closes("```"));
+    }
+
+    #[test]
     fn a_closing_fence_in_a_block_quote_is_found() {
         let dir = temp_dir("registry-quote-fence-closer");
         write(
@@ -2798,6 +2922,25 @@ mod tests {
     }
 
     #[test]
+    fn body_link_targets_read_back_as_the_whole_path() {
+        // A destination between angle brackets drops the brackets.
+        assert_eq!(
+            markdown_link_targets("Read the [guide](<docs/guide.md>)."),
+            vec!["docs/guide.md".to_string()]
+        );
+        // A destination may hold balanced parentheses.
+        assert_eq!(
+            markdown_link_targets("Read the [guide](docs/guide(v2).md)."),
+            vec!["docs/guide(v2).md".to_string()]
+        );
+        // Every link of a text is found.
+        assert_eq!(
+            markdown_link_targets("[a](docs/a.md) and [b](<docs/b.md>)"),
+            vec!["docs/a.md".to_string(), "docs/b.md".to_string()]
+        );
+    }
+
+    #[test]
     fn registry_rows_wrap_a_path_with_parentheses() {
         let dir = temp_dir("registry-parentheses");
         write(
@@ -2821,6 +2964,11 @@ mod tests {
         assert!(!report.out_of_sync());
         assert_eq!(report.exit_code(false), 0);
         assert_eq!(report.kept, vec!["demo(v2)/SKILL.md".to_string()]);
+    }
+
+    /// The text of a line without the markers that may precede a fence.
+    fn strip_fence_prefix(text: &str) -> Option<&str> {
+        parse_fence_prefix(text).map(|prefix| prefix.rest)
     }
 
     fn fixture(name: &str) -> PathBuf {
