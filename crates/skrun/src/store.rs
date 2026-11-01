@@ -8,6 +8,7 @@
 //!
 //! ## Owns
 //! - staging of a local skill directory or of a zip archive
+//! - the fetch of a repository of GitHub into a temporary directory
 //! - refusal of an unsafe zip archive
 //! - refusal of a source that is a symlink
 //! - refusal of a name that is not text
@@ -27,16 +28,19 @@
 //!
 //! ## Must Not
 //! - execute anything that comes from an added skill
-//! - reach the network
+//! - reach the network for anything but the fetch of a repository of GitHub
 //! - overwrite a stored version
 //! - print a value that looks like a secret
 //! - skip a file of the scan because it is not text
 //! - read a file that is not inside the folder of a version
 //! - follow a symlink of a stored version
 //! - follow a symlink of a folder of the store
+//! - follow a symlink of the subpath of a repository
+//! - read the configuration of git of the machine of the user
 //!
 //! ## Inputs
 //! - a local skill directory or a zip archive
+//! - a repository of GitHub, with its owner, its name, its ref and its subpath
 //! - a store root directory
 //! - the id of a stored skill and the name of a file of a version
 //!
@@ -73,8 +77,64 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Schema version written into every threat record.
 pub const RECORD_SCHEMA_VERSION: u32 = 1;
 
+/// The prefix of a source of the `catalog add` command that names a
+/// repository of GitHub.
+pub const GITHUB_PREFIX: &str = "github:";
+
+/// Environment variable that holds the name of the git program that fetches
+/// a repository of GitHub.
+///
+/// The variable is the way to a git that is not the one of the path, so a
+/// test can fetch a repository without the network.
+pub const GIT_ENV: &str = "SKRUN_GIT";
+
 /// Environment variable that holds the store root.
 pub const STORE_ENV: &str = "SKRUN_STORE";
+
+/// The variables of the environment that are removed before a git command.
+///
+/// The variables name a configuration file of git, a folder of templates or
+/// a repository of its own, so the configuration of the shell of the user
+/// cannot move the fetch of a repository away from the address of GitHub.
+const GIT_ISOLATED_VARIABLES: [&str; 14] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_TEMPLATE_DIR",
+    "GIT_WORK_TREE",
+];
+
+/// The options of git that hold back every feature that runs code.
+///
+/// The hooks of the repository never run, the helpers of the credentials
+/// never run, the submodules are never fetched and the filters of the
+/// files never run, because a repository of somebody else must not run
+/// anything on the machine of the user.
+const GIT_SAFE_OPTIONS: [&str; 14] = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "submodule.recurse=false",
+    "-c",
+    "fetch.recurseSubmodules=false",
+    "-c",
+    "filter.lfs.smudge=",
+    "-c",
+    "filter.lfs.process=",
+    "-c",
+    "filter.lfs.required=false",
+];
 
 /// Name of the skill entrypoint inside a skill root.
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -395,10 +455,48 @@ pub fn record_path(root: &Path, id: &str) -> PathBuf {
 /// a second time and no second version is written. The record of a stored
 /// version is refreshed with the findings, the tier and the reasons of the
 /// tier of a fresh scan, so a record that was written by an older rule holds
-/// the findings of today. The hash, the source and the time of the version
-/// stay the same, because the content did not change. A stored copy whose
-/// version is missing from the record repairs the record instead.
+/// the findings of today. The provenance of the skill is the one of the add
+/// of today, so a skill that is stored again names where it came from now.
+/// The hash and the time of the version stay the same, because the content
+/// did not change. A stored copy whose version is missing from the record
+/// repairs the record instead.
+///
+/// A source that names a repository of GitHub is fetched into a temporary
+/// directory first, and the skill of the repository is added from there, so
+/// the skill of a repository goes through the same path as a skill of the
+/// machine of the user.
 pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
+    add_skill_with(options, &SystemGit)
+}
+
+/// Add a skill to the store with a git command line of its own.
+///
+/// The command line is the one that fetches a repository of GitHub, so a
+/// test can hold a repository of its own and never reaches the network.
+pub fn add_skill_with(options: &AddOptions, runner: &dyn GitRunner) -> Result<AddResult> {
+    if let Some(source) = options.source.to_str()
+        && source.starts_with(GITHUB_PREFIX)
+    {
+        let source = parse_github_source(source)?;
+        return add_github_skill(
+            &GitHubAddOptions {
+                source,
+                store: options.store.clone(),
+                id: options.id.clone(),
+                from: options.from.clone(),
+            },
+            runner,
+        );
+    }
+    add_local_skill(options)
+}
+
+/// Add a skill of the machine of the user to the store.
+///
+/// The skill is staged, hashed and scanned first. Only a skill that passes
+/// every check is copied into the store, and the copy is read-only, so a
+/// stored skill never changes behind the back of the user.
+fn add_local_skill(options: &AddOptions) -> Result<AddResult> {
     let root = resolve_store_root(options.store.as_deref())?;
     let source = options.source.as_path();
     let Ok(metadata) = fs::symlink_metadata(source) else {
@@ -446,111 +544,703 @@ pub fn add_skill(options: &AddOptions) -> Result<AddResult> {
     create_private_dir(&root)?;
     let skills_root = root.join("skills");
     create_private_dir(&skills_root)?;
-    create_private_dir(&skills_root.join(&id))?;
+    let id_folder = skills_root.join(&id);
+    let id_folder_is_new = !id_folder.exists();
+    create_private_dir(&id_folder)?;
 
-    let (_short_hash, full_hash, files, bytes) = content_hash(&skill_root)?;
-    let scan = scan_skill(&skill_root)?;
-    let Scan {
-        scripts,
-        findings: scanned,
-        opens_file,
-    } = scan;
-    let mut findings = scanned;
-    let prefix = skill_prefix(&skill_root, &staging.path);
-    for link in links {
-        let Some(path) = strip_prefix(&link, &prefix) else {
-            continue;
-        };
-        findings.push(Finding {
-            rule: "symlink".to_string(),
-            severity: Severity::Medium,
-            path: catalog::redact(&path),
-            line: None,
-            detail: None,
-        });
-    }
-    findings.sort_by(|left, right| {
-        left.severity
-            .cmp(&right.severity)
-            .then_with(|| left.path.cmp(&right.path))
-            .then_with(|| left.line.cmp(&right.line))
-    });
-    let (tier, tier_reasons) = suggest_tier(&scripts, opens_file, &findings);
-
-    // The folder of the version is named after the hash of the version. A
-    // folder of that name that holds another version gets a longer name, so
-    // two versions of a skill never share a folder.
-    let name = version_name(&root, &id, &full_hash)?;
-    let version = StoredVersion {
-        hash: name.clone(),
-        full_hash,
-        from: options.from.as_deref().map(catalog::redact),
-        added_at: rfc3339(SystemTime::now()),
-        files,
-        bytes,
-        name: frontmatter.name.as_deref().map(catalog::redact),
-        description: frontmatter.description.as_deref().map(catalog::redact),
-        scripts: scripts
-            .iter()
-            .map(|scanned| scanned.script.clone())
-            .collect(),
-        findings,
-        tier,
-        tier_reasons,
-    };
-
-    let target = skills_root.join(&id).join(&name);
-    if !target.exists() {
-        store_copy(&skill_root, &skills_root.join(&id), &target)?;
+    // The add is a transaction: the folder of the skill id and the folder
+    // of the version go away again when the add fails, so the store holds
+    // nothing of an add that failed.
+    let mut transaction = StoreTransaction::new();
+    if id_folder_is_new {
+        transaction.remember_id_folder(&id_folder);
     }
 
-    let mut record = load_record(&root, &id)?;
-    // The version of the record is the one of the folder of the version, so
-    // a folder that holds another version never takes the place of a
-    // version that is already stored.
-    let known = record
-        .versions
-        .iter()
-        .position(|stored| stored.hash == version.hash);
-    if let Some(index) = known {
-        // The content is already stored, so the record of the version is
-        // refreshed with the scripts, the findings, the tier and the reasons
-        // of the tier of the scan of today. A record that was written by an
-        // older rule holds the scripts and the findings of today after the
-        // refresh. The hash, the source and the time of the version stay the
-        // same, because the content did not change.
-        let stored = &mut record.versions[index];
-        let refreshed = stored.scripts != version.scripts
-            || stored.findings != version.findings
-            || stored.tier != version.tier
-            || stored.tier_reasons != version.tier_reasons;
-        if refreshed {
-            stored.scripts = version.scripts.clone();
-            stored.findings = version.findings.clone();
-            stored.tier = version.tier;
-            stored.tier_reasons = version.tier_reasons.clone();
-            write_record(&root, &id, &record)?;
+    let outcome = (|| -> Result<AddResult> {
+        let (_short_hash, full_hash, files, bytes) = content_hash(&skill_root)?;
+        let scan = scan_skill(&skill_root)?;
+        let Scan {
+            scripts,
+            findings: scanned,
+            opens_file,
+        } = scan;
+        let mut findings = scanned;
+        let prefix = skill_prefix(&skill_root, &staging.path);
+        for link in links {
+            let Some(path) = strip_prefix(&link, &prefix) else {
+                continue;
+            };
+            findings.push(Finding {
+                rule: "symlink".to_string(),
+                severity: Severity::Medium,
+                path: catalog::redact(&path),
+                line: None,
+                detail: None,
+            });
         }
-        let stored = record.versions[index].clone();
-        return Ok(AddResult {
-            id,
-            already_stored: true,
-            refreshed,
-            version: stored,
+        findings.sort_by(|left, right| {
+            left.severity
+                .cmp(&right.severity)
+                .then_with(|| left.path.cmp(&right.path))
+                .then_with(|| left.line.cmp(&right.line))
         });
+        let (tier, tier_reasons) = suggest_tier(&scripts, opens_file, &findings);
+
+        // The folder of the version is named after the hash of the version. A
+        // folder of that name that holds another version gets a longer name, so
+        // two versions of a skill never share a folder.
+        let name = version_name(&root, &id, &full_hash)?;
+        let version = StoredVersion {
+            hash: name.clone(),
+            full_hash,
+            from: options.from.as_deref().map(catalog::redact),
+            added_at: rfc3339(SystemTime::now()),
+            files,
+            bytes,
+            name: frontmatter.name.as_deref().map(catalog::redact),
+            description: frontmatter.description.as_deref().map(catalog::redact),
+            scripts: scripts
+                .iter()
+                .map(|scanned| scanned.script.clone())
+                .collect(),
+            findings,
+            tier,
+            tier_reasons,
+        };
+
+        let target = skills_root.join(&id).join(&name);
+        if !target.exists() {
+            store_copy(&skill_root, &skills_root.join(&id), &target)?;
+            // The folder of the version belongs to this add, so it goes away
+            // again when the add fails.
+            transaction.remember_version(&target);
+        }
+
+        let mut record = load_record(&root, &id)?;
+        // The version of the record is the one of the folder of the version, so
+        // a folder that holds another version never takes the place of a
+        // version that is already stored.
+        let known = record
+            .versions
+            .iter()
+            .position(|stored| stored.hash == version.hash);
+        if let Some(index) = known {
+            // The content is already stored, so the record of the version is
+            // refreshed with the scripts, the findings, the tier and the reasons
+            // of the tier of the scan of today. A record that was written by an
+            // older rule holds the scripts and the findings of today after the
+            // refresh. The hash and the time of the version stay the same,
+            // because the content did not change.
+            let stored = &mut record.versions[index];
+            let refreshed = stored.scripts != version.scripts
+                || stored.findings != version.findings
+                || stored.tier != version.tier
+                || stored.tier_reasons != version.tier_reasons;
+            // The provenance of the skill is the one of the add of today, so a
+            // skill that is stored again names where it came from now, even
+            // when the content is the very same content. A skill that is added
+            // without a provenance keeps the one that it has.
+            let provenance = version.from.clone();
+            let provenance_changed = provenance.is_some() && stored.from != provenance;
+            if refreshed || provenance_changed {
+                stored.scripts = version.scripts.clone();
+                stored.findings = version.findings.clone();
+                stored.tier = version.tier;
+                stored.tier_reasons = version.tier_reasons.clone();
+                if provenance_changed {
+                    stored.from = provenance;
+                }
+                write_record(&root, &id, &record)?;
+            }
+            let stored = record.versions[index].clone();
+            return Ok(AddResult {
+                id,
+                already_stored: true,
+                refreshed: refreshed || provenance_changed,
+                version: stored,
+            });
+        }
+
+        // The record lost the version of the copy that is there: the record is
+        // repaired instead of the version being stored again.
+        record.versions.push(version.clone());
+        write_record(&root, &id, &record)?;
+
+        Ok(AddResult {
+            id,
+            already_stored: false,
+            refreshed: false,
+            version,
+        })
+    })();
+
+    // A failed add leaves nothing of itself in the store.
+    if outcome.is_err() {
+        transaction.rollback();
+    }
+    outcome
+}
+
+/// The folders of the store that one add creates.
+///
+/// An add is a transaction: when the add fails, the folders it created go
+/// away again, so the store holds nothing of an add that failed.
+struct StoreTransaction {
+    /// The folder of the skill id, when the add created it.
+    id_folder: Option<PathBuf>,
+    /// The folder of the version, when the add created it.
+    version_folder: Option<PathBuf>,
+}
+
+impl StoreTransaction {
+    /// A transaction that created nothing yet.
+    fn new() -> Self {
+        Self {
+            id_folder: None,
+            version_folder: None,
+        }
     }
 
-    // The record lost the version of the copy that is there: the record is
-    // repaired instead of the version being stored again.
-    record.versions.push(version.clone());
-    write_record(&root, &id, &record)?;
+    /// Remember the folder of the skill id, when the add created it.
+    fn remember_id_folder(&mut self, path: &Path) {
+        self.id_folder = Some(path.to_path_buf());
+    }
 
-    Ok(AddResult {
-        id,
-        already_stored: false,
-        refreshed: false,
-        version,
+    /// Remember the folder of the version, when the add created it.
+    fn remember_version(&mut self, path: &Path) {
+        self.version_folder = Some(path.to_path_buf());
+    }
+
+    /// Take the folders of the add away again.
+    ///
+    /// The folder of the version goes away, and the folder of the skill id
+    /// goes away too when it is empty, so a version that was stored before
+    /// is never lost.
+    fn rollback(self) {
+        if let Some(folder) = &self.version_folder {
+            let _ = remove_tree(folder);
+        }
+        if let Some(folder) = &self.id_folder {
+            let _ = fs::remove_dir(folder);
+        }
+    }
+}
+
+/// A repository of GitHub that a skill comes from.
+///
+/// The source is written as `github:<owner>/<repo>@<ref>//<subpath>`. The
+/// ref is optional and names the branch, the tag or the commit that is
+/// fetched, and the subpath is optional and names the folder of the
+/// repository that holds the skill. A source without a ref fetches the
+/// default branch of the repository, and a source without a subpath takes
+/// the whole repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubSource {
+    /// The owner of the repository.
+    pub owner: String,
+    /// The name of the repository.
+    pub repo: String,
+    /// The ref that is fetched, when the user named one.
+    pub reference: Option<String>,
+    /// The folder of the repository that holds the skill.
+    pub subpath: Option<String>,
+}
+
+/// What the `catalog add` command needs to add a skill of GitHub.
+#[derive(Debug, Clone)]
+pub struct GitHubAddOptions {
+    /// The repository of GitHub that holds the skill.
+    pub source: GitHubSource,
+    /// The store root, when the user named one.
+    pub store: Option<PathBuf>,
+    /// The id of the skill, when the user named one.
+    pub id: Option<String>,
+    /// Where the skill came from, when the user said so.
+    ///
+    /// The provenance of a source of GitHub is the repository with the
+    /// commit that was fetched, so this is always empty for a source of
+    /// GitHub.
+    pub from: Option<String>,
+}
+
+/// The result of one git command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitOutput {
+    /// Whether the command ended well.
+    pub success: bool,
+    /// The text that the command wrote to its standard output.
+    pub stdout: String,
+    /// The text that the command wrote to its standard error.
+    pub stderr: String,
+}
+
+/// The git command line that fetches a repository.
+///
+/// The trait is the way to a repository without the network, so a test can
+/// hold a repository of its own and never reaches GitHub.
+pub trait GitRunner {
+    /// Run one git command in a directory and return what it wrote.
+    fn run(&self, args: &[&str], directory: &Path) -> Result<GitOutput>;
+}
+
+/// The git command line of the machine of the user.
+///
+/// The command line never asks for a password and never reads the system
+/// configuration of git, so a fetch of a repository of somebody else cannot
+/// ask the user for anything and cannot be moved by the configuration of the
+/// machine.
+///
+/// The configuration of the user of git is never read either, and neither is
+/// the configuration that the environment of the shell hands to git, so a
+/// rule like `url.<base>.insteadOf` of the machine of the user cannot move
+/// the fetch away from the address of GitHub.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemGit;
+
+impl GitRunner for SystemGit {
+    fn run(&self, args: &[&str], directory: &Path) -> Result<GitOutput> {
+        let program = git_program();
+        let mut command = std::process::Command::new(&program);
+        command.args(args).current_dir(directory);
+        // The command line never asks for a password: the terminal of the
+        // user never prompts and the prompt programs of the environment
+        // are gone, so a fetch of a repository of somebody else cannot ask
+        // the user for anything.
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env_remove("GIT_ASKPASS");
+        command.env_remove("SSH_ASKPASS");
+        command.env_remove("SSH_ASKPASS_REQUIRE");
+        // The credential manager of git never asks anything either.
+        command.env("GCM_INTERACTIVE", "never");
+        // The configuration of the system of git is never read.
+        command.env("GIT_CONFIG_NOSYSTEM", "1");
+        // The configuration of the user of git is never read, so a rule of
+        // the configuration of the machine cannot move the fetch away from
+        // the address of GitHub.
+        command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+        // The configuration of the environment of the shell is never read
+        // either, so a variable of the shell cannot move the fetch away
+        // from the address of GitHub.
+        for variable in GIT_ISOLATED_VARIABLES {
+            command.env_remove(variable);
+        }
+        for (name, _) in std::env::vars_os() {
+            let name = name.to_string_lossy();
+            if name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_") {
+                command.env_remove(name.as_ref());
+            }
+        }
+        let output = command
+            .output()
+            .with_context(|| format!("run `{}`", catalog::redact(&program)))?;
+        Ok(GitOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
+}
+
+/// The git program that fetches a repository.
+///
+/// The program is the one of the `SKRUN_GIT` variable, else the `git` of the
+/// path of the machine.
+pub fn git_program() -> String {
+    std::env::var(GIT_ENV)
+        .ok()
+        .map(|program| program.trim().to_string())
+        .filter(|program| !program.is_empty())
+        .unwrap_or_else(|| "git".to_string())
+}
+
+/// Read a source of a repository of GitHub.
+///
+/// The source is `github:<owner>/<repo>[@<ref>][//<subpath>]`. The ref and
+/// the subpath are optional, and every part of the source is checked,
+/// because the owner and the repository end up in the address of the fetch
+/// and the ref ends up in the command line of the fetch.
+pub fn parse_github_source(source: &str) -> Result<GitHubSource> {
+    let Some(rest) = source.strip_prefix(GITHUB_PREFIX) else {
+        bail!("`{}` is not a source of GitHub", catalog::redact(source));
+    };
+    // The subpath is behind a double slash, so the repository and its ref
+    // are read first.
+    let (repository, subpath) = match rest.find("//") {
+        Some(position) => (&rest[..position], Some(rest[position + 2..].to_string())),
+        None => (rest, None),
+    };
+    // The ref is behind an at sign, so the owner and the repository are read
+    // first.
+    let (repository, reference) = match repository.find('@') {
+        Some(position) => (
+            &repository[..position],
+            Some(repository[position + 1..].to_string()),
+        ),
+        None => (repository, None),
+    };
+    let Some((owner, repo)) = repository.split_once('/') else {
+        bail!("a source of GitHub is `github:<owner>/<repo>[@<ref>][//<subpath>]`");
+    };
+    check_github_name(owner, "owner")?;
+    check_github_repo(repo)?;
+    let reference = match reference {
+        Some(reference) => {
+            check_github_ref(&reference)?;
+            Some(reference)
+        }
+        None => None,
+    };
+    let subpath = match subpath {
+        Some(subpath) => {
+            check_github_subpath(&subpath)?;
+            Some(subpath)
+        }
+        None => None,
+    };
+    Ok(GitHubSource {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        reference,
+        subpath,
     })
+}
+
+/// Check the owner or the name of a repository.
+///
+/// The name starts with a letter or a number and holds only letters,
+/// numbers, a dot, a dash and an underscore after that, so it can never
+/// be an option of the command line and can never change the address of
+/// the fetch.
+fn check_github_name(name: &str, field: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("the {field} of a source of GitHub cannot be empty");
+    }
+    let mut characters = name.chars();
+    let first = characters.next().unwrap_or_default();
+    if !first.is_ascii_alphanumeric() {
+        bail!(
+            "the {field} `{}` of a source of GitHub must start with a letter or a number",
+            catalog::redact(name)
+        );
+    }
+    if !characters
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-'))
+    {
+        bail!(
+            "the {field} `{}` of a source of GitHub holds a character that is not allowed",
+            catalog::redact(name)
+        );
+    }
+    Ok(())
+}
+
+/// Check the name of a repository of GitHub.
+///
+/// The name of the repository ends up in the address of the fetch, and the
+/// fetch adds `.git` to that address, so a name that ends with `.git`
+/// would end up with `.git` twice.
+fn check_github_repo(repo: &str) -> Result<()> {
+    check_github_name(repo, "repository")?;
+    if repo.ends_with(".git") {
+        bail!(
+            "the repository `{}` of a source of GitHub cannot end with `.git`",
+            catalog::redact(repo)
+        );
+    }
+    Ok(())
+}
+
+/// Check the ref of a repository of GitHub.
+///
+/// The ref holds only letters, numbers, a dot, a dash, an underscore and a slash, it never
+/// starts with a dash and it never holds two dots in a row, so it can never
+/// leave the repository and can never be an option of the command line of
+/// the fetch.
+fn check_github_ref(reference: &str) -> Result<()> {
+    if reference.is_empty() {
+        bail!("the ref of a source of GitHub cannot be empty");
+    }
+    if reference.starts_with('-') {
+        bail!("the ref of a source of GitHub cannot start with a dash");
+    }
+    if !reference.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '.' | '/' | '-' | '_')
+    }) {
+        bail!(
+            "the ref `{}` of a source of GitHub holds a character that is not allowed",
+            catalog::redact(reference)
+        );
+    }
+    if reference.contains("..") {
+        bail!("the ref of a source of GitHub cannot hold `..`");
+    }
+    Ok(())
+}
+
+/// Check the subpath of a repository of GitHub.
+///
+/// The subpath is a path inside the repository, so it never starts with a
+/// slash and every part of it is a name of a folder: the part holds only
+/// letters, numbers, a dot, a dash and an underscore, it never starts with
+/// a dash and it is never the current folder or the folder above it.
+fn check_github_subpath(subpath: &str) -> Result<()> {
+    if subpath.is_empty() {
+        bail!("the subpath of a source of GitHub cannot be empty");
+    }
+    if subpath.starts_with('/') {
+        bail!("the subpath of a source of GitHub cannot start with a slash");
+    }
+    for part in subpath.split('/') {
+        if part.is_empty() {
+            bail!(
+                "the subpath `{}` of a source of GitHub is not a path inside the repository",
+                catalog::redact(subpath)
+            );
+        }
+        if part == "." {
+            bail!("the subpath of a source of GitHub cannot hold `.`");
+        }
+        if part == ".." {
+            bail!("the subpath of a source of GitHub cannot hold `..`");
+        }
+        if part.starts_with('-') {
+            bail!("the subpath of a source of GitHub cannot hold a part that starts with a dash");
+        }
+        if !part.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-')
+        }) {
+            bail!(
+                "the subpath `{}` of a source of GitHub holds a character that is not allowed",
+                catalog::redact(subpath)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Check that every part of the subpath of a repository is a real folder.
+///
+/// A repository can hold a symlink in the middle of the subpath of a skill,
+/// and a symlink can point at anything, so the files of the skill would come
+/// from outside the checkout. Every part of the subpath is a real folder of
+/// the checkout before the folder of the skill is opened.
+fn check_github_subpath_links(root: &Path, subpath: &str) -> Result<()> {
+    let mut path = root.to_path_buf();
+    let mut relative = PathBuf::new();
+    for part in subpath.split('/') {
+        path.push(part);
+        relative.push(part);
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            bail!(
+                "the folder `{}` of the repository does not exist",
+                catalog::redact_path(&relative)
+            );
+        };
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "the folder `{}` of the repository is a symlink, a symlink is never followed",
+                catalog::redact_path(&relative)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Add a skill of a repository of GitHub to the store.
+///
+/// The repository is fetched into a temporary directory and the skill of the
+/// subpath is added from there, so the skill of a repository goes through the
+/// same checks, the same scan and the same tier as a skill of the machine of
+/// the user. Nothing of the repository is ever run.
+///
+/// The provenance of the skill is the repository with the commit that was
+/// fetched and the subpath of the skill, so the record of the store names
+/// the exact content that was stored. The provenance of a source of GitHub
+/// is never the one of the user, because the record must name the commit
+/// that was fetched.
+///
+/// No part of the subpath of the skill is a symlink, so the files of the
+/// skill come from the checkout of the repository and not from somewhere
+/// else of the machine of the user.
+///
+/// The temporary directory of the fetch goes away with the command, also
+/// when the add fails.
+pub fn add_github_skill(options: &GitHubAddOptions, runner: &dyn GitRunner) -> Result<AddResult> {
+    // The provenance of a source of GitHub is the repository with the
+    // commit that was fetched, so the user cannot name another one.
+    if options.from.is_some() {
+        bail!("a source of GitHub has its own provenance, `--from` is not allowed");
+    }
+    // The id of the skill is known before the repository is fetched, so a
+    // name that is no id never reaches the network.
+    let id = match options.id.clone() {
+        Some(id) => id,
+        None => {
+            // The name of the repository and the name of the folder of the
+            // subpath are names of a skill only when they are a valid id,
+            // so the user is told to name the skill when they are not.
+            let id = github_id(&options.source);
+            if let Err(error) = validate_id(&id) {
+                bail!(
+                    "the id `{}` of the skill of the repository is not a valid id: {error}, use `--id` to name the skill",
+                    catalog::redact(&id)
+                );
+            }
+            id
+        }
+    };
+    let checkout = fetch_github(&options.source, runner)?;
+    let directory = match options.source.subpath.as_deref() {
+        Some(subpath) => {
+            // A repository can hold a symlink in the middle of the
+            // subpath, and a symlink can point at anything, so every part
+            // of the subpath is checked before the folder is opened.
+            check_github_subpath_links(&checkout.staging.path, subpath)?;
+            checkout.staging.path.join(subpath)
+        }
+        None => checkout.staging.path.clone(),
+    };
+    let from = github_provenance(&options.source, &checkout.sha);
+    add_skill(&AddOptions {
+        source: directory,
+        store: options.store.clone(),
+        id: Some(id),
+        from: Some(from),
+    })
+}
+
+/// The id of a skill of a repository of GitHub.
+///
+/// The id is the name of the folder of the subpath, else the name of the
+/// repository, so two skills of two repositories that share a name stay two
+/// skills.
+fn github_id(source: &GitHubSource) -> String {
+    match source.subpath.as_deref() {
+        Some(subpath) => subpath
+            .rsplit('/')
+            .next()
+            .unwrap_or(source.repo.as_str())
+            .to_string(),
+        None => source.repo.clone(),
+    }
+}
+
+/// The provenance of a skill of a repository of GitHub.
+///
+/// The provenance names the owner, the repository, the commit that was
+/// fetched and the subpath of the skill.
+fn github_provenance(source: &GitHubSource, sha: &str) -> String {
+    format!(
+        "github:{}/{}@{}//{}",
+        source.owner,
+        source.repo,
+        sha,
+        source.subpath.as_deref().unwrap_or("")
+    )
+}
+
+/// A repository of GitHub that was fetched into a temporary directory.
+struct GitHubCheckout {
+    /// The temporary directory that holds the fetched repository.
+    staging: Staging,
+    /// The commit that was fetched.
+    sha: String,
+}
+
+/// Fetch a repository of GitHub into a fresh temporary directory.
+///
+/// The repository is fetched with the git command line, without a prompt for
+/// a password, and the hooks of the repository are never run, because a
+/// repository of somebody else must not run anything on the machine of the
+/// user. The hooks are off for every command that can run one, so the hook
+/// of a checkout that came with the templates of git never runs either.
+///
+/// The temporary directory goes away with the command, also when the fetch
+/// fails.
+fn fetch_github(source: &GitHubSource, runner: &dyn GitRunner) -> Result<GitHubCheckout> {
+    let staging = Staging::named("skrun-github")?;
+    let url = format!("https://github.com/{}/{}.git", source.owner, source.repo);
+    // A source without a ref takes the default branch of the repository.
+    let reference = source
+        .reference
+        .clone()
+        .unwrap_or_else(|| "HEAD".to_string());
+    git(runner, &git_args(&["init"]), &staging.path)?;
+    git(
+        runner,
+        &git_args(&[
+            "fetch",
+            "--depth",
+            "1",
+            "--no-recurse-submodules",
+            url.as_str(),
+            reference.as_str(),
+        ]),
+        &staging.path,
+    )?;
+    git(
+        runner,
+        &git_args(&["checkout", "--detach", "FETCH_HEAD"]),
+        &staging.path,
+    )?;
+    let sha = git(runner, &git_args(&["rev-parse", "HEAD"]), &staging.path)?
+        .trim()
+        .to_string();
+    check_sha(&sha)?;
+    Ok(GitHubCheckout { staging, sha })
+}
+
+/// The command line of one git command.
+///
+/// Every command of the fetch holds the options that hold back the
+/// features of git that run code, so the hooks of the repository, the
+/// helpers of the credentials, the submodules and the filters of the files
+/// never run.
+fn git_args(command: &[&str]) -> Vec<String> {
+    let mut args: Vec<String> = GIT_SAFE_OPTIONS
+        .iter()
+        .map(|option| option.to_string())
+        .collect();
+    for argument in command {
+        args.push(argument.to_string());
+    }
+    args
+}
+
+/// Run one git command and fail when the command does not end well.
+fn git(runner: &dyn GitRunner, args: &[String], directory: &Path) -> Result<String> {
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = runner.run(&borrowed, directory)?;
+    if !output.success {
+        let reason = output.stderr.trim();
+        let reason = if reason.is_empty() {
+            "the command failed".to_string()
+        } else {
+            reason.to_string()
+        };
+        bail!(
+            "`git {}` failed: {}",
+            catalog::redact(&args.join(" ")),
+            catalog::redact(&reason)
+        );
+    }
+    Ok(output.stdout)
+}
+
+/// Check the commit of a fetched repository.
+///
+/// The commit is the full name of the object, so a command line that
+/// writes an abbreviation of a commit or something else never ends up in
+/// the provenance of a skill.
+fn check_sha(sha: &str) -> Result<()> {
+    let full = sha.len() == 40 || sha.len() == 64;
+    let hexadecimal = sha
+        .chars()
+        .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character));
+    if !full || !hexadecimal {
+        bail!("the fetched repository has no full commit id");
+    }
+    Ok(())
 }
 
 /// Copy a skill root into the store.
@@ -3425,15 +4115,19 @@ struct Staging {
 impl Staging {
     /// A fresh staging directory below the temporary directory.
     fn new() -> Result<Self> {
+        Self::named("skrun-store")
+    }
+
+    /// A fresh staging directory below the temporary directory, with a name
+    /// of its own.
+    fn named(prefix: &str) -> Result<Self> {
         for attempt in 0..64u32 {
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "skrun-store-{}-{stamp}-{attempt}",
-                std::process::id()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("{prefix}-{}-{stamp}-{attempt}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => {
                     set_directory_mode(&path, PRIVATE_DIR_MODE)?;
@@ -3479,6 +4173,16 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use zip::CompressionMethod;
     use zip::write::SimpleFileOptions;
+
+    /// A ref with an underscore, such as the name of a branch, is accepted;
+    /// a ref with `..` or a leading dash is still refused.
+    #[test]
+    fn github_ref_accepts_an_underscore() {
+        assert!(check_github_ref("feature_branch").is_ok());
+        assert!(check_github_ref("release/v1_2").is_ok());
+        assert!(check_github_ref("a..b").is_err());
+        assert!(check_github_ref("-x_y").is_err());
+    }
 
     /// A key shaped value that must never reach the output.
     const SECRET: &str = "AKIAIOSFODNN7EXAMPLE";

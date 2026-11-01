@@ -8,7 +8,7 @@
 //! - skill artifact run command
 //! - local skill install and list commands
 //! - catalog index, registry and check commands
-//! - catalog add and inspect commands
+//! - catalog add and inspect commands, with a local source and a source of GitHub
 //! - catalog path and cat commands
 //!
 //! ## Must Not
@@ -351,11 +351,20 @@ struct CatalogSearchCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 struct CatalogAddCommand {
-    source: PathBuf,
+    source: AddSource,
     store: Option<PathBuf>,
     id: Option<String>,
     from: Option<String>,
     json: bool,
+}
+
+/// The source of a skill that is added to the store.
+#[derive(Debug, Clone, PartialEq)]
+enum AddSource {
+    /// A folder or a zip archive of the machine of the user.
+    Local(PathBuf),
+    /// A repository of GitHub, with the commit that is fetched.
+    GitHub(store::GitHubSource),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -728,8 +737,9 @@ fn parse_catalog_search(mut cursor: Cursor) -> Result<CatalogSearchCommand> {
 
 /// Parse the `catalog add` command.
 ///
-/// The source is a local skill directory or a zip archive. The store, the id
-/// and the provenance of the skill are optional.
+/// The source is a local skill directory, a zip archive or a repository of
+/// GitHub that is written as `github:<owner>/<repo>[@<ref>][//<subpath>]`.
+/// The store, the id and the provenance of the skill are optional.
 fn parse_catalog_add(mut cursor: Cursor) -> Result<CatalogAddCommand> {
     let mut store = None;
     let mut id = None;
@@ -748,7 +758,7 @@ fn parse_catalog_add(mut cursor: Cursor) -> Result<CatalogAddCommand> {
             }
             value => {
                 if source.is_none() {
-                    source = Some(PathBuf::from(value));
+                    source = Some(parse_add_source(value)?);
                 } else {
                     return usage("catalog add takes one source");
                 }
@@ -756,13 +766,41 @@ fn parse_catalog_add(mut cursor: Cursor) -> Result<CatalogAddCommand> {
         }
     }
 
+    let source = source.ok_or_else(|| usage_error("missing source"))?;
+    // The provenance of a source of GitHub is the repository with the commit
+    // that was fetched, so the user cannot name another one.
+    if let AddSource::GitHub(_) = &source
+        && from.is_some()
+    {
+        return usage("a source of GitHub has its own provenance, `--from` is not allowed");
+    }
+
     Ok(CatalogAddCommand {
-        source: source.ok_or_else(|| usage_error("missing source"))?,
+        source,
         store,
         id,
         from,
         json,
     })
+}
+
+/// Read the source of a skill that is added to the store.
+///
+/// A source that starts with `github:` names a repository of GitHub, and
+/// every part of it is checked, because the source ends up in the command
+/// line of the fetch. Every other source is a folder or a zip archive of
+/// the machine of the user.
+fn parse_add_source(value: &str) -> Result<AddSource> {
+    if value.starts_with(store::GITHUB_PREFIX) {
+        let source = store::parse_github_source(value).map_err(|error| {
+            usage_error(format!(
+                "invalid source of GitHub `{}`: {error}",
+                catalog::redact(value)
+            ))
+        })?;
+        return Ok(AddSource::GitHub(source));
+    }
+    Ok(AddSource::Local(PathBuf::from(value)))
 }
 
 /// Parse the `catalog inspect` command.
@@ -990,12 +1028,23 @@ fn run_catalog_check_to(options: &CatalogCheckCommand, out: &mut dyn Write) -> R
 /// The skill is copied into the store, hashed and scanned. Nothing of the
 /// skill is ever run, so an added skill is safe to look at.
 fn run_catalog_add(options: &CatalogAddCommand) -> Result<()> {
-    let result = store::add_skill(&store::AddOptions {
-        source: options.source.clone(),
-        store: options.store.clone(),
-        id: options.id.clone(),
-        from: options.from.clone(),
-    })?;
+    let result = match &options.source {
+        AddSource::Local(source) => store::add_skill(&store::AddOptions {
+            source: source.clone(),
+            store: options.store.clone(),
+            id: options.id.clone(),
+            from: options.from.clone(),
+        })?,
+        AddSource::GitHub(source) => store::add_github_skill(
+            &store::GitHubAddOptions {
+                source: source.clone(),
+                store: options.store.clone(),
+                id: options.id.clone(),
+                from: options.from.clone(),
+            },
+            &store::SystemGit,
+        )?,
+    };
     if options.json {
         let value = serde_json::to_value(&result.version)?;
         println!(
@@ -1199,12 +1248,21 @@ fn print_usage() {
   skrun catalog registry <dir> [--registry <file>] [--write]
   skrun catalog check <dir> [--registry <file>] [--index <file>]
   skrun catalog search <dir> <query>... [--kind folder|flat] [--has-scripts] [--limit N] [--json]
-  skrun catalog add <source> [--store <dir>] [--id <id>] [--from <provenance>] [--json]
+  skrun catalog add <dir|zip|github:owner/repo[@ref][//subpath]> [--store <dir>] [--id <id>] [--from <provenance>] [--json]
   skrun catalog inspect <id> [--store <dir>] [--json]
   skrun catalog inspect --list [--store <dir>] [--json]
   skrun catalog path <id> [--store <dir>] [--version <hash>]
   skrun catalog cat <id> [<relative-file>] [--store <dir>] [--version <hash>] [--require-safe]
   skrun catalog cat <id> --list [--store <dir>] [--version <hash>]
+"#
+    );
+    println!(
+        r#"
+A source of `catalog add` that starts with `github:` is fetched from
+GitHub with the git command line. Such a source downloads untrusted content
+of somebody else into a temporary directory and stores it, so run the
+command in an isolated environment and read the record of the store before
+you use anything of it. Nothing of a fetched repository is ever run.
 "#
     );
 }
@@ -1398,7 +1456,10 @@ mod tests {
         let Command::Catalog(CatalogCommand::Add(command)) = command else {
             panic!("expected catalog add command");
         };
-        assert_eq!(command.source, PathBuf::from("skills/demo"));
+        assert_eq!(
+            command.source,
+            AddSource::Local(PathBuf::from("skills/demo"))
+        );
         assert_eq!(command.store, Some(PathBuf::from("store")));
         assert_eq!(command.id, Some("demo".to_string()));
         assert_eq!(command.from, Some("https://example.com/repo".to_string()));

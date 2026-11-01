@@ -75,3 +75,36 @@ fn the_usage_text_shows_the_file_of_a_version() {
         "stdout: {stdout}"
     );
 }
+
+#[test]
+fn the_usage_text_shows_a_source_of_github() {
+    let output = Command::new(BINARY)
+        .arg("--help")
+        .output()
+        .expect("run the skrun binary");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("skrun catalog add <dir|zip|github:owner/repo[@ref][//subpath]>"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn the_usage_text_warns_about_the_content_of_a_repository_of_github() {
+    // A source of GitHub downloads content of somebody else, so the usage
+    // text tells the user to run the command in an isolated environment.
+    let output = Command::new(BINARY)
+        .arg("--help")
+        .output()
+        .expect("run the skrun binary");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("downloads untrusted content"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("isolated environment"), "stdout: {stdout}");
+}
