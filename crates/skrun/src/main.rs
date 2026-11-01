@@ -9,6 +9,7 @@
 //! - local skill install and list commands
 //! - catalog index, registry and check commands
 //! - catalog add and inspect commands
+//! - catalog path and cat commands
 //!
 //! ## Must Not
 //! - start the legacy daemon
@@ -48,9 +49,23 @@ use std::time::Duration;
 
 fn main() {
     if let Err(error) = run(env::args().skip(1).collect()) {
-        eprintln!("Error: {error:#}");
+        eprintln!("Error: {}", error_text(&error));
         std::process::exit(exit_code(&error));
     }
+}
+
+/// The text of an error and of the causes behind it.
+///
+/// Every cause of the error goes through the redaction helper and the text
+/// of the whole chain goes through it as well, so a value of a broken
+/// record that looks like a secret never reaches the output.
+fn error_text(error: &anyhow::Error) -> String {
+    let chain = error
+        .chain()
+        .map(|cause| catalog::redact(&cause.to_string()))
+        .collect::<Vec<String>>()
+        .join(": ");
+    catalog::redact(&chain)
 }
 
 /// The exit status of a failed command.
@@ -58,12 +73,25 @@ fn main() {
 /// A usage error, an error about how the command was invoked, ends the
 /// command with status 2; every other error ends it with status 1.
 fn exit_code(error: &anyhow::Error) -> i32 {
+    if error
+        .chain()
+        .any(|cause| cause.is::<store::UnsafeVersion>())
+    {
+        return UNSAFE_EXIT_CODE;
+    }
     let usage = error.chain().any(|cause| cause.is::<UsageError>());
     if usage { USAGE_EXIT_CODE } else { 1 }
 }
 
 /// The exit status of a usage error.
 const USAGE_EXIT_CODE: i32 = 2;
+
+/// The exit status of a version that is not safe to read.
+///
+/// A version that the user asked to read safely is refused with its own
+/// status, so the user sees that the version is not safe and not a broken
+/// file.
+const UNSAFE_EXIT_CODE: i32 = 3;
 
 /// An error about how the command was invoked.
 ///
@@ -207,6 +235,14 @@ fn run(args: Vec<String>) -> Result<()> {
             run_catalog_inspect(&options)?;
             Ok(())
         }
+        Command::Catalog(CatalogCommand::Path(options)) => {
+            run_catalog_path(&options)?;
+            Ok(())
+        }
+        Command::Catalog(CatalogCommand::Cat(options)) => {
+            run_catalog_cat(&options)?;
+            Ok(())
+        }
     }
 }
 
@@ -235,6 +271,8 @@ enum CatalogCommand {
     Search(CatalogSearchCommand),
     Add(CatalogAddCommand),
     Inspect(CatalogInspectCommand),
+    Path(CatalogPathCommand),
+    Cat(CatalogCatCommand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -326,6 +364,23 @@ struct CatalogInspectCommand {
     store: Option<PathBuf>,
     list: bool,
     json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogPathCommand {
+    id: String,
+    store: Option<PathBuf>,
+    version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CatalogCatCommand {
+    id: String,
+    file: Option<String>,
+    store: Option<PathBuf>,
+    version: Option<String>,
+    list: bool,
+    require_safe: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -544,6 +599,8 @@ fn parse_catalog(mut cursor: Cursor) -> Result<CatalogCommand> {
         "search" => parse_catalog_search(cursor).map(CatalogCommand::Search),
         "add" => parse_catalog_add(cursor).map(CatalogCommand::Add),
         "inspect" => parse_catalog_inspect(cursor).map(CatalogCommand::Inspect),
+        "path" => parse_catalog_path(cursor).map(CatalogCommand::Path),
+        "cat" => parse_catalog_cat(cursor).map(CatalogCommand::Cat),
         other => usage(format!(
             "unknown catalog command `{}`",
             catalog::redact(other)
@@ -748,6 +805,83 @@ fn parse_catalog_inspect(mut cursor: Cursor) -> Result<CatalogInspectCommand> {
     })
 }
 
+/// Parse the `catalog path` command.
+///
+/// The command shows the folder of a stored version of a skill. The newest
+/// version is shown when no version is named.
+fn parse_catalog_path(mut cursor: Cursor) -> Result<CatalogPathCommand> {
+    let mut store = None;
+    let mut version = None;
+    let mut id = None;
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--store" => store = Some(PathBuf::from(cursor.next_required("--store value")?)),
+            "--version" => version = Some(cursor.next_required("--version value")?),
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
+            value => {
+                if id.is_none() {
+                    id = Some(value.to_string());
+                } else {
+                    return usage("catalog path takes one skill id");
+                }
+            }
+        }
+    }
+
+    Ok(CatalogPathCommand {
+        id: id.ok_or_else(|| usage_error("missing skill id"))?,
+        store,
+        version,
+    })
+}
+
+/// Parse the `catalog cat` command.
+///
+/// The command shows a file of a stored version of a skill. The file of the
+/// skill itself is shown when no file is named, and the list of the files of
+/// markdown is shown when `--list` is given.
+fn parse_catalog_cat(mut cursor: Cursor) -> Result<CatalogCatCommand> {
+    let mut store = None;
+    let mut version = None;
+    let mut list = false;
+    let mut require_safe = false;
+    let mut id = None;
+    let mut file = None;
+
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--store" => store = Some(PathBuf::from(cursor.next_required("--store value")?)),
+            "--version" => version = Some(cursor.next_required("--version value")?),
+            "--list" => list = true,
+            "--require-safe" => require_safe = true,
+            value if value.starts_with('-') => {
+                return usage(format!("unknown option `{}`", catalog::redact(value)));
+            }
+            value => {
+                if id.is_none() {
+                    id = Some(value.to_string());
+                } else if file.is_none() {
+                    file = Some(value.to_string());
+                } else {
+                    return usage("catalog cat takes one skill id and one file");
+                }
+            }
+        }
+    }
+
+    Ok(CatalogCatCommand {
+        id: id.ok_or_else(|| usage_error("missing skill id"))?,
+        file,
+        store,
+        version,
+        list,
+        require_safe,
+    })
+}
+
 /// The kind of skill a search keeps.
 fn parse_search_kind(value: &str) -> Result<catalog::SkillKind> {
     match value {
@@ -917,6 +1051,56 @@ fn run_catalog_inspect(options: &CatalogInspectCommand) -> Result<()> {
     Ok(())
 }
 
+/// Run the `catalog path` command.
+///
+/// The folder of the stored version is the only thing the command prints, so
+/// the path can be used by another tool without reading the record again.
+fn run_catalog_path(options: &CatalogPathCommand) -> Result<()> {
+    let root = store::resolve_store_root(options.store.as_deref())?;
+    let location = store::version_location(&root, &options.id, options.version.as_deref())?;
+    // The folder of the version has to be there, so the path that is
+    // printed is a folder of the store and not a folder that is gone.
+    let folder = store::stored_folder(&location)?;
+    println!("{}", catalog::redact_path(&folder));
+    Ok(())
+}
+
+/// Run the `catalog cat` command.
+///
+/// The file of the stored version is the only thing the command prints. The
+/// file is read and never run, so looking at a skill is safe.
+///
+/// With `--require-safe` a version that is not safe to read is refused
+/// before anything is printed, so nothing of such a version reaches the
+/// output.
+fn run_catalog_cat(options: &CatalogCatCommand) -> Result<()> {
+    let root = store::resolve_store_root(options.store.as_deref())?;
+    // The version is resolved once, so the check of the safety and the
+    // read of the file work on the same version, even when another
+    // version is added while the command runs.
+    let location = store::version_location(&root, &options.id, options.version.as_deref())?;
+    if options.require_safe {
+        store::refuse_unsafe_version(&location.version)?;
+    }
+    if options.list {
+        let files = store::list_version_markdown(&location)?;
+        let mut text = String::new();
+        for file in files {
+            text.push_str(&catalog::redact(&file));
+            text.push('\n');
+        }
+        print!("{text}");
+        return Ok(());
+    }
+    let file = match options.file.as_deref() {
+        Some(file) if !file.trim().is_empty() => file.to_string(),
+        _ => store::SKILL_FILE.to_string(),
+    };
+    let text = store::read_version_file(&location, &file)?;
+    print!("{text}");
+    Ok(())
+}
+
 /// Render the output of the `catalog index` command.
 ///
 /// Without `--out` the rendered index is returned for printing. With `--out`
@@ -1018,6 +1202,9 @@ fn print_usage() {
   skrun catalog add <source> [--store <dir>] [--id <id>] [--from <provenance>] [--json]
   skrun catalog inspect <id> [--store <dir>] [--json]
   skrun catalog inspect --list [--store <dir>] [--json]
+  skrun catalog path <id> [--store <dir>] [--version <hash>]
+  skrun catalog cat <id> [<relative-file>] [--store <dir>] [--version <hash>] [--require-safe]
+  skrun catalog cat <id> --list [--store <dir>] [--version <hash>]
 "#
     );
 }
@@ -1704,6 +1891,85 @@ mod tests {
         assert_eq!(command.root, PathBuf::from("installed"));
         assert_eq!(command.id, "team");
         assert_eq!(command.format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn parses_catalog_path_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "path".to_string(),
+            "demo".to_string(),
+            "--store".to_string(),
+            "store".to_string(),
+            "--version".to_string(),
+            "0123456789abcdef".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Path(command)) = command else {
+            panic!("expected catalog path command");
+        };
+        assert_eq!(command.id, "demo");
+        assert_eq!(command.store, Some(PathBuf::from("store")));
+        assert_eq!(command.version, Some("0123456789abcdef".to_string()));
+    }
+
+    #[test]
+    fn parses_catalog_cat_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "cat".to_string(),
+            "demo".to_string(),
+            "docs/guide.md".to_string(),
+            "--store".to_string(),
+            "store".to_string(),
+            "--version".to_string(),
+            "0123456789abcdef".to_string(),
+            "--require-safe".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Cat(command)) = command else {
+            panic!("expected catalog cat command");
+        };
+        assert_eq!(command.id, "demo");
+        assert_eq!(command.file, Some("docs/guide.md".to_string()));
+        assert_eq!(command.store, Some(PathBuf::from("store")));
+        assert_eq!(command.version, Some("0123456789abcdef".to_string()));
+        assert!(command.require_safe);
+        assert!(!command.list);
+    }
+
+    #[test]
+    fn parses_catalog_cat_list_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "cat".to_string(),
+            "demo".to_string(),
+            "--list".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Cat(command)) = command else {
+            panic!("expected catalog cat command");
+        };
+        assert_eq!(command.id, "demo");
+        assert!(command.list);
+        assert_eq!(command.file, None);
+    }
+
+    #[test]
+    fn a_catalog_path_without_an_id_is_a_usage_error() {
+        let error = parse(vec!["catalog".to_string(), "path".to_string()]).unwrap_err();
+
+        assert!(error.is::<UsageError>(), "{error:?}");
+    }
+
+    #[test]
+    fn a_catalog_cat_without_an_id_is_a_usage_error() {
+        let error = parse(vec!["catalog".to_string(), "cat".to_string()]).unwrap_err();
+
+        assert!(error.is::<UsageError>(), "{error:?}");
     }
 
     fn write(path: &Path, text: &str) {

@@ -39,3 +39,39 @@ fn the_usage_text_shows_the_record_of_one_skill() {
         "stdout: {stdout}"
     );
 }
+
+#[test]
+fn the_usage_text_shows_the_path_of_a_version() {
+    let output = Command::new(BINARY)
+        .arg("--help")
+        .output()
+        .expect("run the skrun binary");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("skrun catalog path <id> [--store <dir>] [--version <hash>]"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
+fn the_usage_text_shows_the_file_of_a_version() {
+    let output = Command::new(BINARY)
+        .arg("--help")
+        .output()
+        .expect("run the skrun binary");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "skrun catalog cat <id> [<relative-file>] [--store <dir>] [--version <hash>] [--require-safe]"
+        ),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("skrun catalog cat <id> --list [--store <dir>] [--version <hash>]"),
+        "stdout: {stdout}"
+    );
+}

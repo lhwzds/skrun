@@ -15,6 +15,8 @@
 //! - the content hash of a staged skill
 //! - the name of the folder of every version of a skill
 //! - the read-only copy of a stored skill
+//! - the folder of a stored version and the files that it holds
+//! - the text of a file of a stored version
 //! - the threat record of every added version
 //! - the risk rules of the scan and the tier they suggest
 //! - the finding of a file that was not read and of a file that cannot be
@@ -29,17 +31,24 @@
 //! - overwrite a stored version
 //! - print a value that looks like a secret
 //! - skip a file of the scan because it is not text
+//! - read a file that is not inside the folder of a version
+//! - follow a symlink of a stored version
+//! - follow a symlink of a folder of the store
 //!
 //! ## Inputs
 //! - a local skill directory or a zip archive
 //! - a store root directory
+//! - the id of a stored skill and the name of a file of a version
 //!
 //! ## Outputs
 //! - a read-only stored skill copy
 //! - a threat record
 //! - a store summary
+//! - the folder of a stored version
+//! - the text of a file of a stored version
 //!
 //! ## Depends On
+//! - libc
 //! - regex
 //! - serde_json
 //! - sha2
@@ -58,7 +67,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Schema version written into every threat record.
@@ -778,6 +787,1036 @@ pub fn render_summaries(summaries: &[StoreSummary]) -> String {
         ));
     }
     text
+}
+
+/// The largest file that the `catalog cat` command prints.
+///
+/// A file of a stored skill is read as a whole, so a file that is bigger
+/// than this is refused instead of filling the memory of the command.
+pub const MAX_CAT_BYTES: u64 = 2 * 1000 * 1000;
+
+/// Where a stored version of a skill lives.
+///
+/// The folder of a version never changes, so the path of a version is the
+/// place where the files of that version can be looked at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionLocation {
+    /// The id of the skill.
+    pub id: String,
+    /// The hash that names the version.
+    pub hash: String,
+    /// The absolute path of the folder of the version.
+    pub path: PathBuf,
+    /// The absolute path of the root of the store.
+    ///
+    /// The root is the folder that the user named, so it is the one place
+    /// of the store that is trusted: every folder below it is opened below
+    /// the folder before it and without following a symlink.
+    pub root: PathBuf,
+    /// The record of the version.
+    pub version: StoredVersion,
+}
+
+/// The folder of a stored version of a skill.
+///
+/// The newest version of the skill is taken when no version is named. A
+/// version is named by the hash of the record, by the whole content hash or
+/// by the start of the content hash, when that start names one version and
+/// no other.
+///
+/// A skill that was never added and a version that was never stored have no
+/// folder, so the command fails.
+pub fn version_location(root: &Path, id: &str, version: Option<&str>) -> Result<VersionLocation> {
+    let record = read_record(root, id)?;
+    let stored = select_version(&record, version)?;
+    let hash = stored.hash.clone();
+    let folder = root.join("skills").join(id).join(&hash);
+    Ok(VersionLocation {
+        id: id.to_string(),
+        hash,
+        path: absolute_path(&folder),
+        root: absolute_path(root),
+        version: stored.clone(),
+    })
+}
+
+/// The folder of a stored version, when the store holds it.
+///
+/// A version of a record whose folder is gone is not a version of the
+/// store, so a file of it cannot be read and its folder cannot be shown.
+///
+/// The folder is opened below the root of the store and without following a
+/// symlink, so a folder of the store that is a link is never taken for the
+/// folder of a version.
+pub fn stored_folder(location: &VersionLocation) -> Result<PathBuf> {
+    verify_version_folder(location)?;
+    Ok(location.path.clone())
+}
+
+/// Check that the folder of a version is a folder of the store.
+///
+/// The folder is opened below the root of the store and without following a
+/// symlink, so a folder of the store that is a link is refused.
+#[cfg(unix)]
+fn verify_version_folder(location: &VersionLocation) -> Result<()> {
+    let _folder = open_version_dir(location)?;
+    Ok(())
+}
+
+/// Check that the folder of a version is a folder of the store.
+///
+/// Without a system of unix the folder is looked at where it is, so a
+/// folder that is a link is refused.
+#[cfg(not(unix))]
+fn verify_version_folder(location: &VersionLocation) -> Result<()> {
+    let metadata = match fs::symlink_metadata(&location.path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!(
+                "the stored version `{}` of the skill `{}` is not in the store",
+                catalog::redact(&location.hash),
+                catalog::redact(&location.id)
+            );
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error)
+                .context(format!("read `{}`", catalog::redact_path(&location.path))));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "the stored version `{}` of the skill `{}` is not in the store",
+            catalog::redact(&location.hash),
+            catalog::redact(&location.id)
+        );
+    }
+    Ok(())
+}
+
+/// The version of a record that is asked for.
+///
+/// The newest version is the last one of the record, because a version is
+/// added to the end of the record when it is stored.
+fn select_version<'a>(record: &'a ThreatRecord, wanted: Option<&str>) -> Result<&'a StoredVersion> {
+    let Some(wanted) = wanted else {
+        return record.versions.last().ok_or_else(|| {
+            anyhow::anyhow!(
+                "the skill `{}` has no stored version",
+                catalog::redact(&record.id)
+            )
+        });
+    };
+    let wanted = wanted.trim();
+    if let Some(version) = record
+        .versions
+        .iter()
+        .find(|version| version.hash == wanted)
+    {
+        return Ok(version);
+    }
+    if let Some(version) = record
+        .versions
+        .iter()
+        .find(|version| version.full_hash == wanted)
+    {
+        return Ok(version);
+    }
+    if wanted.len() >= 4 {
+        let mut found = record
+            .versions
+            .iter()
+            .filter(|version| version.full_hash.starts_with(wanted));
+        if let Some(version) = found.next()
+            && found.next().is_none()
+        {
+            return Ok(version);
+        }
+    }
+
+    bail!(
+        "the version `{}` of the skill `{}` is not stored",
+        catalog::redact(wanted),
+        catalog::redact(&record.id)
+    )
+}
+
+/// The text of a file of a stored version.
+///
+/// The file is named by a path that is relative to the folder of the
+/// version. A path that leaves the folder of the version, a path that is
+/// absolute and a path that holds a symlink are refused, so a file of the
+/// store is the only thing that is ever read.
+///
+/// The file is opened through the folder of the version and without
+/// following a symlink, and the type and the size of the file that was
+/// opened are the ones that are checked. A file that is put in the place
+/// of the file while the command runs is therefore never read.
+///
+/// A file that is not text and a file that is bigger than `MAX_CAT_BYTES`
+/// are refused as well: the command prints a file, not a part of it.
+pub fn read_version_file(location: &VersionLocation, relative: &str) -> Result<String> {
+    let relative = safe_relative(relative)?;
+    let path = location.path.join(&relative);
+    let file = open_version_file(location, &relative)?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+    if !metadata.is_file() {
+        bail!(
+            "the file `{}` is not a file of the stored version `{}`",
+            catalog::redact(&relative.to_string_lossy()),
+            catalog::redact(&location.hash)
+        );
+    }
+    if metadata.len() > MAX_CAT_BYTES {
+        bail!(
+            "the file `{}` is bigger than {MAX_CAT_BYTES} bytes",
+            catalog::redact(&relative.to_string_lossy())
+        );
+    }
+    let mut bytes = Vec::new();
+    // The file is read with a limit, so a file that is bigger than the
+    // limit is refused even when it grew after it was opened.
+    file.take(MAX_CAT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+    if bytes.len() as u64 > MAX_CAT_BYTES {
+        bail!(
+            "the file `{}` is bigger than {MAX_CAT_BYTES} bytes",
+            catalog::redact(&relative.to_string_lossy())
+        );
+    }
+    let text = String::from_utf8(bytes).map_err(|_| {
+        anyhow::anyhow!(
+            "the file `{}` is not valid UTF-8",
+            catalog::redact(&relative.to_string_lossy())
+        )
+    })?;
+    Ok(text)
+}
+
+/// The folders of the store that hold a version of a skill.
+///
+/// Every name is a single part of a path, so a name that holds a separator
+/// names no folder of the store and never a folder outside of it.
+fn store_parts(location: &VersionLocation) -> Result<Vec<String>> {
+    let parts = [
+        "skills".to_string(),
+        location.id.clone(),
+        location.hash.clone(),
+    ];
+    for part in &parts {
+        if part.is_empty()
+            || part == "."
+            || part == ".."
+            || part.contains('/')
+            || part.contains('\0')
+        {
+            bail!(
+                "the name `{}` is not a name of the store",
+                catalog::redact(part)
+            );
+        }
+    }
+    Ok(parts.to_vec())
+}
+
+/// Open a file of a stored version without following a symlink.
+///
+/// The root of the store is opened first, and every folder of the path of
+/// the file is opened below the folder before it and without following a
+/// symlink. A folder of the store or a folder of a version that is put in
+/// the place of another one while the command runs is therefore never read
+/// through.
+#[cfg(unix)]
+fn open_version_file(location: &VersionLocation, relative: &Path) -> Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut names = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            bail!(
+                "the file `{}` must be a path inside the stored version",
+                catalog::redact(&relative.to_string_lossy())
+            );
+        };
+        let name = std::ffi::CString::new(part.as_bytes()).map_err(|_| {
+            anyhow::anyhow!(
+                "the file `{}` must be a path inside the stored version",
+                catalog::redact(&relative.to_string_lossy())
+            )
+        })?;
+        names.push(name);
+    }
+    let Some((last, parents)) = names.split_last() else {
+        bail!(
+            "the file `{}` names no file",
+            catalog::redact(&relative.to_string_lossy())
+        );
+    };
+    let mut directory = open_version_dir(location)?;
+    for name in parents {
+        directory = open_relative(directory.as_raw_fd(), name, true, location, relative)?;
+    }
+    let file = open_relative(directory.as_raw_fd(), last, false, location, relative)?;
+    Ok(unsafe { fs::File::from_raw_fd(file.into_raw_fd()) })
+}
+
+/// Open a file of a stored version without following a reparse point.
+///
+/// Windows cannot open a file below a folder without following a reparse
+/// point, so every part of the path is opened with a handle that does not
+/// follow a reparse point and every handle is looked at. A reparse point
+/// in the place of a part of the path is refused, so a file of another
+/// folder is never read.
+#[cfg(windows)]
+fn open_version_file(location: &VersionLocation, relative: &Path) -> Result<fs::File> {
+    let mut path = location.root.clone();
+    for part in store_parts(location)? {
+        path.push(&part);
+        let folder = open_no_reparse(&path, true)?;
+        let metadata = folder
+            .metadata()
+            .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "the folder `{}` of the store is a symlink, a symlink is never followed",
+                catalog::redact(&part)
+            );
+        }
+        if !metadata.is_dir() {
+            bail!(
+                "the stored version `{}` of the skill `{}` is not in the store",
+                catalog::redact(&location.hash),
+                catalog::redact(&location.id)
+            );
+        }
+    }
+
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            bail!(
+                "the file `{}` must be a path inside the stored version",
+                catalog::redact(&relative.to_string_lossy())
+            );
+        };
+        parts.push(part.to_os_string());
+    }
+    let Some((last, parents)) = parts.split_last() else {
+        bail!(
+            "the file `{}` names no file",
+            catalog::redact(&relative.to_string_lossy())
+        );
+    };
+    for part in parents {
+        path.push(part);
+        let folder = open_no_reparse(&path, true)?;
+        let metadata = folder
+            .metadata()
+            .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "the file `{}` is a symlink, a symlink is never followed",
+                catalog::redact(&relative.to_string_lossy())
+            );
+        }
+        if !metadata.is_dir() {
+            bail!(
+                "the file `{}` is not a file of the stored version `{}`",
+                catalog::redact(&relative.to_string_lossy()),
+                catalog::redact(&location.hash)
+            );
+        }
+    }
+    path.push(last);
+    let file = open_no_reparse(&path, false)?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "the file `{}` is a symlink, a symlink is never followed",
+            catalog::redact(&relative.to_string_lossy())
+        );
+    }
+    if !metadata.is_file() {
+        bail!(
+            "the file `{}` is not a file of the stored version `{}`",
+            catalog::redact(&relative.to_string_lossy()),
+            catalog::redact(&location.hash)
+        );
+    }
+    // The file that was opened is inside the version, so a folder of the
+    // path that is put in the place of a link while the command runs never
+    // shows a file of another folder.
+    stay_inside(&location.path, &path)?;
+    Ok(file)
+}
+
+/// Open a path without following a reparse point.
+///
+/// The handle of a reparse point is the handle of the reparse point itself,
+/// so a link in the place of the path is seen and refused.
+#[cfg(windows)]
+fn open_no_reparse(path: &Path, want_directory: bool) -> Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// Open the reparse point itself and not the file that it points at.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    /// Open a folder, which cannot be opened without this flag.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let mut flags = FILE_FLAG_OPEN_REPARSE_POINT;
+    if want_directory {
+        flags |= FILE_FLAG_BACKUP_SEMANTICS;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.custom_flags(flags);
+    if !want_directory {
+        options.read(true);
+    }
+    options
+        .open(path)
+        .with_context(|| format!("read `{}`", catalog::redact_path(path)))
+}
+
+/// Open a file of a stored version without following a symlink.
+///
+/// Without a system of unix a file cannot be opened below a folder without
+/// following a symlink, so the file is checked before it is opened and the
+/// file that was opened is checked again.
+#[cfg(not(any(unix, windows)))]
+fn open_version_file(location: &VersionLocation, relative: &Path) -> Result<fs::File> {
+    // The names of the folders of the store are checked, so a name that is
+    // not a name of the store is refused.
+    let _parts = store_parts(location)?;
+    let path = location.path.join(relative);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!(
+                "the file `{}` is not in the stored version `{}`",
+                catalog::redact(&relative.to_string_lossy()),
+                catalog::redact(&location.hash)
+            );
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error)
+                .context(format!("read `{}`", catalog::redact_path(&path))));
+        }
+    };
+    if !metadata.is_file() {
+        bail!(
+            "the file `{}` is not a file of the stored version `{}`",
+            catalog::redact(&relative.to_string_lossy()),
+            catalog::redact(&location.hash)
+        );
+    }
+    let file =
+        fs::File::open(&path).with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+    let opened = file
+        .metadata()
+        .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+    if !opened.is_file() || opened.len() != metadata.len() {
+        bail!(
+            "the file `{}` is not a file of the stored version `{}`",
+            catalog::redact(&relative.to_string_lossy()),
+            catalog::redact(&location.hash)
+        );
+    }
+    Ok(file)
+}
+
+/// The folder of a stored version, opened without following a symlink.
+///
+/// The root of the store is the folder that the user named, so it is opened
+/// as it is named. Every folder below it is opened below the folder before
+/// it and without following a symlink, so a folder of the store that is
+/// put in the place of another one is never read through.
+#[cfg(unix)]
+fn open_version_dir(location: &VersionLocation) -> Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let root = std::ffi::CString::new(location.root.as_os_str().as_bytes()).map_err(|_| {
+        anyhow::anyhow!(
+            "the store of the skill `{}` has no name",
+            catalog::redact(&location.id)
+        )
+    })?;
+    // The root is the folder that the user named, so it is opened as it is
+    // named; only the folders below it are refused when they are a link.
+    let fd = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(anyhow::Error::new(std::io::Error::last_os_error())
+            .context(format!("read `{}`", catalog::redact_path(&location.root))));
+    }
+    let mut directory = unsafe { OwnedFd::from_raw_fd(fd) };
+    for part in store_parts(location)? {
+        directory = open_store_folder(directory.as_raw_fd(), &part, location)?;
+    }
+    Ok(directory)
+}
+
+/// Open a folder of the store without following a symlink.
+///
+/// The folder is opened below the folder before it, so the name of the
+/// folder never names another folder of the store.
+#[cfg(unix)]
+fn open_store_folder(
+    directory: std::os::fd::RawFd,
+    name: &str,
+    location: &VersionLocation,
+) -> Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    let name = std::ffi::CString::new(name).map_err(|_| {
+        anyhow::anyhow!(
+            "the folder `{}` of the store has no name",
+            catalog::redact(name)
+        )
+    })?;
+    let fd = unsafe {
+        libc::openat(
+            directory,
+            name.as_ptr(),
+            libc::O_RDONLY
+                | libc::O_DIRECTORY
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC
+                | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(store_open_error(
+            std::io::Error::last_os_error(),
+            &name,
+            directory,
+            location,
+        ));
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The error of a folder of the store that cannot be opened.
+///
+/// A symlink is never followed, so a link is named as a link and not as a
+/// folder that cannot be read.
+#[cfg(unix)]
+fn store_open_error(
+    error: std::io::Error,
+    name: &std::ffi::CStr,
+    directory: std::os::fd::RawFd,
+    location: &VersionLocation,
+) -> anyhow::Error {
+    let label = catalog::redact(&name.to_string_lossy());
+    match error.raw_os_error() {
+        Some(libc::ELOOP) => anyhow::anyhow!(
+            "the folder `{}` of the store is a symlink, a symlink is never followed",
+            label
+        ),
+        Some(libc::ENOTDIR) if is_symlink_at(directory, name) => anyhow::anyhow!(
+            "the folder `{}` of the store is a symlink, a symlink is never followed",
+            label
+        ),
+        Some(libc::ENOENT) | Some(libc::ENOTDIR) => anyhow::anyhow!(
+            "the stored version `{}` of the skill `{}` is not in the store",
+            catalog::redact(&location.hash),
+            catalog::redact(&location.id)
+        ),
+        Some(libc::EACCES) | Some(libc::EPERM) => {
+            anyhow::anyhow!("the folder `{}` of the store cannot be read", label)
+        }
+        _ => anyhow::Error::new(error).context(format!("read `{}`", label)),
+    }
+}
+
+/// Whether a name below a folder is a symlink.
+///
+/// The name is looked at without following a symlink, so the answer is
+/// about the name itself and not about the file that it points at.
+#[cfg(unix)]
+fn is_symlink_at(directory: std::os::fd::RawFd, name: &std::ffi::CStr) -> bool {
+    let mut status: libc::stat = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::fstatat(
+            directory,
+            name.as_ptr(),
+            &mut status,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    result == 0 && status.st_mode as u32 & libc::S_IFMT as u32 == libc::S_IFLNK as u32
+}
+
+/// Open a name below a folder, without following a symlink.
+///
+/// The descriptor of the folder is the one of the version, so the name is
+/// never resolved through another folder.
+#[cfg(unix)]
+fn open_relative(
+    directory: std::os::fd::RawFd,
+    name: &std::ffi::CStr,
+    want_directory: bool,
+    location: &VersionLocation,
+    relative: &Path,
+) -> Result<std::os::fd::OwnedFd> {
+    openat_raw(directory, name, want_directory)
+        .map_err(|error| open_error(error, location, relative, directory, name))
+}
+
+/// Open a name below a folder, without following a symlink.
+///
+/// The name is opened below the descriptor of the folder, so the name never
+/// names a file of another folder.
+#[cfg(unix)]
+fn openat_raw(
+    directory: std::os::fd::RawFd,
+    name: &std::ffi::CStr,
+    want_directory: bool,
+) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    let mut flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
+    if want_directory {
+        flags |= libc::O_DIRECTORY;
+    }
+    let fd = unsafe { libc::openat(directory, name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// The error of a file of a version that cannot be opened.
+///
+/// A symlink is never followed, so a link is named as a link and not as a
+/// file that cannot be read.
+#[cfg(unix)]
+fn open_error(
+    error: std::io::Error,
+    location: &VersionLocation,
+    relative: &Path,
+    directory: std::os::fd::RawFd,
+    name: &std::ffi::CStr,
+) -> anyhow::Error {
+    let label = catalog::redact(&relative.to_string_lossy());
+    match error.raw_os_error() {
+        Some(libc::ELOOP) => {
+            anyhow::anyhow!(
+                "the file `{}` is a symlink, a symlink is never followed",
+                label
+            )
+        }
+        Some(libc::ENOTDIR) if is_symlink_at(directory, name) => {
+            anyhow::anyhow!(
+                "the file `{}` is a symlink, a symlink is never followed",
+                label
+            )
+        }
+        Some(libc::ENOENT) => anyhow::anyhow!(
+            "the file `{}` is not in the stored version `{}`",
+            label,
+            catalog::redact(&location.hash)
+        ),
+        Some(libc::ENOTDIR) => anyhow::anyhow!(
+            "the file `{}` is not a file of the stored version `{}`",
+            label,
+            catalog::redact(&location.hash)
+        ),
+        Some(libc::EACCES) | Some(libc::EPERM) => {
+            anyhow::anyhow!("the file `{}` cannot be read", label)
+        }
+        _ => anyhow::Error::new(error).context(format!("read `{}`", label)),
+    }
+}
+
+/// The markdown files of a stored version.
+///
+/// The paths are relative to the folder of the version and sorted, so the
+/// list of a version is the same on every machine.
+pub fn list_version_markdown(location: &VersionLocation) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    collect_markdown(location, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+/// The markdown files of a stored version.
+///
+/// The folders are read through their descriptor, so a folder that is put
+/// in the place of another folder while the command runs never shows a file
+/// of another folder.
+#[cfg(unix)]
+fn collect_markdown(location: &VersionLocation, out: &mut Vec<String>) -> Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let directory = open_version_dir(location)?;
+    collect_markdown_at(directory.as_raw_fd(), "", out, location)
+}
+
+/// The markdown files below a folder, read through its descriptor.
+///
+/// Every entry is looked at without following a symlink, and every folder
+/// is opened below the folder before it and without following a symlink, so
+/// a link is never followed and never listed.
+#[cfg(unix)]
+fn collect_markdown_at(
+    directory: std::os::fd::RawFd,
+    prefix: &str,
+    out: &mut Vec<String>,
+    location: &VersionLocation,
+) -> Result<()> {
+    use std::os::fd::AsRawFd;
+
+    for (name, kind) in read_dir_at(directory)? {
+        let Some(name) = name.to_str() else {
+            bail!(
+                "an entry of the stored version `{}` has a name that is not valid UTF-8",
+                catalog::redact(&location.hash)
+            );
+        };
+        let relative = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if kind == libc::S_IFLNK as u32 {
+            // A link is never followed and never listed.
+            continue;
+        }
+        if kind == libc::S_IFDIR as u32 {
+            let name = std::ffi::CString::new(name).map_err(|_| {
+                anyhow::anyhow!(
+                    "the file `{}` must be a path inside the stored version",
+                    catalog::redact(&relative)
+                )
+            })?;
+            match openat_raw(directory, &name, true) {
+                Ok(child) => {
+                    collect_markdown_at(child.as_raw_fd(), &relative, out, location)?;
+                }
+                Err(error) if is_gone_error(&error) => {
+                    // The folder is a link now or it is gone, so it is not
+                    // read and it is not listed.
+                    continue;
+                }
+                Err(error) => {
+                    return Err(open_error(
+                        error,
+                        location,
+                        Path::new(&relative),
+                        directory,
+                        &name,
+                    ));
+                }
+            }
+        } else if kind == libc::S_IFREG as u32 && is_markdown(&relative) {
+            out.push(relative);
+        }
+    }
+    Ok(())
+}
+
+/// Whether an error of an open is the error of a name that is gone.
+///
+/// A name that is a link now, a name that is gone and a name that is not a
+/// folder are all names that hold no folder of the version, so they are
+/// never read and never listed.
+#[cfg(unix)]
+fn is_gone_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::ELOOP) | Some(libc::ENOENT) | Some(libc::ENOTDIR)
+    )
+}
+
+/// The entries of a folder, read through its descriptor.
+///
+/// Every entry is looked at without following a symlink, so the type of an
+/// entry is the type of the entry itself and not the type of the file that
+/// a link points at.
+#[cfg(unix)]
+fn read_dir_at(directory: std::os::fd::RawFd) -> Result<Vec<(std::ffi::OsString, u32)>> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStringExt;
+
+    // The folder is read through a copy of its descriptor, so the
+    // descriptor of the caller stays open.
+    let copy = unsafe { libc::dup(directory) };
+    if copy < 0 {
+        return Err(anyhow::Error::new(std::io::Error::last_os_error())
+            .context("read the folder of the stored version"));
+    }
+    let handle = unsafe { libc::fdopendir(copy) };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(copy) };
+        return Err(anyhow::Error::new(error).context("read the folder of the stored version"));
+    }
+    let mut entries = Vec::new();
+    loop {
+        let entry = unsafe { libc::readdir(handle) };
+        if entry.is_null() {
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        let bytes = name.to_bytes();
+        if bytes == b"." || bytes == b".." {
+            continue;
+        }
+        let mut status: libc::stat = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::fstatat(
+                directory,
+                name.as_ptr(),
+                &mut status,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                // The entry is gone, so it is not listed.
+                continue;
+            }
+            unsafe { libc::closedir(handle) };
+            return Err(anyhow::Error::new(error).context("read the folder of the stored version"));
+        }
+        let kind = status.st_mode as u32 & libc::S_IFMT as u32;
+        entries.push((std::ffi::OsString::from_vec(bytes.to_vec()), kind));
+    }
+    unsafe { libc::closedir(handle) };
+    Ok(entries)
+}
+
+/// The markdown files of a stored version.
+///
+/// Every folder is opened with a handle that does not follow a reparse
+/// point, so a folder that is a link is never read and never listed.
+#[cfg(windows)]
+fn collect_markdown(location: &VersionLocation, out: &mut Vec<String>) -> Result<()> {
+    let folder = stored_folder(location)?;
+    let mut files = Vec::new();
+    collect_markdown_below(&folder, &folder, "", &mut files)?;
+    out.extend(files);
+    Ok(())
+}
+
+/// The markdown files of a stored version.
+///
+/// Every folder is looked at before it is read, so a folder that is a link
+/// is never read and never listed.
+#[cfg(not(any(unix, windows)))]
+fn collect_markdown(location: &VersionLocation, out: &mut Vec<String>) -> Result<()> {
+    let folder = stored_folder(location)?;
+    let mut files = Vec::new();
+    collect_markdown_below(&folder, &folder, "", &mut files)?;
+    out.extend(files);
+    Ok(())
+}
+
+/// The markdown files below a folder, relative to that folder.
+///
+/// A symlink is never followed and never listed, because a symlink can
+/// point at anything. A folder that is not inside the version is never
+/// read, so the list holds no file of another folder.
+#[cfg(not(unix))]
+fn collect_markdown_below(
+    root: &Path,
+    dir: &Path,
+    prefix: &str,
+    out: &mut Vec<String>,
+) -> Result<()> {
+    for path in read_dir_sorted(dir)? {
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        let name = utf8_name(&path, "entry")?;
+        let relative = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if metadata.is_dir() {
+            stay_inside(root, &path)?;
+            #[cfg(windows)]
+            {
+                // The folder is opened with a handle that does not follow a
+                // reparse point, so a folder that is a link is not read.
+                let handle = open_no_reparse(&path, true)?;
+                let opened = handle
+                    .metadata()
+                    .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+                if opened.file_type().is_symlink() || !opened.is_dir() {
+                    continue;
+                }
+            }
+            collect_markdown_below(root, &path, &relative, out)?;
+        } else if metadata.is_file() && is_markdown(&relative) {
+            out.push(relative);
+        }
+    }
+    Ok(())
+}
+
+/// Whether a path names a markdown file.
+fn is_markdown(relative: &str) -> bool {
+    Path::new(relative)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
+/// The path of a file inside the folder of a version.
+///
+/// Only a relative path of normal names is accepted. A path that is
+/// absolute and a path that holds `..` would leave the folder of the
+/// version, so both are refused.
+fn safe_relative(relative: &str) -> Result<PathBuf> {
+    let path = Path::new(relative);
+    if path.is_absolute() {
+        bail!(
+            "the file `{}` must be a path inside the stored version",
+            catalog::redact(relative)
+        );
+    }
+    let mut inside = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => inside.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                bail!(
+                    "the file `{}` must not leave the stored version",
+                    catalog::redact(relative)
+                );
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "the file `{}` must be a path inside the stored version",
+                    catalog::redact(relative)
+                );
+            }
+        }
+    }
+    if inside.as_os_str().is_empty() {
+        bail!("the file `{}` names no file", catalog::redact(relative));
+    }
+    Ok(inside)
+}
+
+/// Refuse a file that is not inside the folder of the version.
+///
+/// The folder of the version and the file are resolved before they are
+/// compared, so a file that leaves the folder through a link is refused.
+#[cfg(not(unix))]
+fn stay_inside(dir: &Path, file: &Path) -> Result<()> {
+    let (Ok(real_dir), Ok(real_file)) = (fs::canonicalize(dir), fs::canonicalize(file)) else {
+        return Ok(());
+    };
+    if !real_file.starts_with(&real_dir) {
+        bail!(
+            "the file `{}` is not inside the stored version",
+            catalog::redact_path(file)
+        );
+    }
+    Ok(())
+}
+
+/// The absolute path of a path.
+///
+/// The path is not resolved through symlinks, so the path of a store stays
+/// the path that the user named.
+fn absolute_path(path: &Path) -> PathBuf {
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(current) => current.join(path),
+            Err(_) => path.to_path_buf(),
+        }
+    };
+    let mut absolute = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            other => absolute.push(other.as_os_str()),
+        }
+    }
+    absolute
+}
+
+/// The error of a version that is not safe to read.
+///
+/// The command that reads a version with `--require-safe` ends with its own
+/// status, so the user sees that the version is not safe and not a broken
+/// file.
+#[derive(Debug, Clone)]
+pub struct UnsafeVersion {
+    /// Why the version is not safe to read.
+    pub reason: String,
+}
+
+impl std::fmt::Display for UnsafeVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for UnsafeVersion {}
+
+/// The reason why a version is not safe to read.
+///
+/// A version with a high finding and a version of the tier L3 hold
+/// something that must not run, so they are not safe to read.
+pub fn unsafe_reason(version: &StoredVersion) -> Option<String> {
+    if version.tier == Tier::L3 {
+        return Some(format!(
+            "the tier of the version is {}",
+            version.tier.as_str()
+        ));
+    }
+    let high: Vec<String> = version
+        .findings
+        .iter()
+        .filter(|finding| finding.severity == Severity::High)
+        .map(|finding| catalog::redact(&finding.rule))
+        .collect();
+    if high.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "the version has {} high {}: {}",
+        high.len(),
+        if high.len() == 1 {
+            "finding"
+        } else {
+            "findings"
+        },
+        high.join(", ")
+    ))
+}
+
+/// Refuse a version that is not safe to read.
+pub fn refuse_unsafe_version(version: &StoredVersion) -> Result<()> {
+    let Some(reason) = unsafe_reason(version) else {
+        return Ok(());
+    };
+    Err(anyhow::Error::new(UnsafeVersion {
+        reason: format!(
+            "the stored version `{}` is not safe to read: {reason}",
+            catalog::redact(&version.hash)
+        ),
+    }))
 }
 
 /// The record of a skill id, with a fresh one when there is none yet.
@@ -2435,6 +3474,7 @@ fn unlock_directories(root: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use zip::CompressionMethod;
@@ -2485,6 +3525,26 @@ mod tests {
             "import os\n\nKEY = \"AKIAIOSFODNN7EXAMPLE\"\nprint(KEY)\n",
         );
         dir
+    }
+
+    /// Make a folder of the store writable again.
+    ///
+    /// The copy in the store is read only, so a test that puts a file into
+    /// it or that removes a file of it has to open the folder first.
+    fn make_writable(path: &Path) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(path, permissions).unwrap();
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap().path();
+            if entry.is_dir() && !entry.is_symlink() {
+                make_writable(&entry);
+            } else {
+                let mut permissions = fs::metadata(&entry).unwrap().permissions();
+                permissions.set_mode(0o600);
+                fs::set_permissions(&entry, permissions).unwrap();
+            }
+        }
     }
 
     /// The options of an add of a source into a store.
@@ -3674,6 +4734,256 @@ mod tests {
         // The lock of the other add stays, so the two adds never write the
         // same record at the same time.
         assert!(path.exists());
+    }
+
+    /// A stored version with the given tier and findings.
+    fn stored_version(tier: Tier, findings: Vec<Finding>) -> StoredVersion {
+        StoredVersion {
+            hash: "0123456789abcdef".to_string(),
+            full_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            from: None,
+            added_at: "2026-01-01T00:00:00Z".to_string(),
+            files: 2,
+            bytes: 42,
+            name: Some("demo".to_string()),
+            description: None,
+            scripts: Vec::new(),
+            findings,
+            tier,
+            tier_reasons: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_path_that_leaves_the_version_is_refused() {
+        assert!(safe_relative("SKILL.md").is_ok());
+        assert!(safe_relative("docs/guide.md").is_ok());
+        assert!(safe_relative("./docs/guide.md").is_ok());
+        assert!(safe_relative("../SKILL.md").is_err());
+        assert!(safe_relative("docs/../../SKILL.md").is_err());
+        assert!(safe_relative("/etc/passwd").is_err());
+        assert!(safe_relative("").is_err());
+    }
+
+    #[test]
+    fn a_relative_path_becomes_an_absolute_path() {
+        let absolute = absolute_path(Path::new("store/skills/demo"));
+
+        assert!(absolute.is_absolute(), "{absolute:?}");
+    }
+
+    #[test]
+    fn a_version_of_the_tier_l3_is_not_safe() {
+        let version = stored_version(Tier::L3, Vec::new());
+
+        let reason = unsafe_reason(&version).expect("the reason of the refusal");
+        assert!(reason.contains("L3"), "{reason}");
+        assert!(refuse_unsafe_version(&version).is_err());
+    }
+
+    #[test]
+    fn a_version_with_a_high_finding_is_not_safe() {
+        let version = stored_version(
+            Tier::L1,
+            vec![Finding {
+                rule: "binary".to_string(),
+                severity: Severity::High,
+                path: "tool.bin".to_string(),
+                line: None,
+                detail: None,
+            }],
+        );
+
+        let reason = unsafe_reason(&version).expect("the reason of the refusal");
+        assert!(reason.contains("high finding"), "{reason}");
+        assert!(reason.contains("binary"), "{reason}");
+        assert!(refuse_unsafe_version(&version).is_err());
+    }
+
+    #[test]
+    fn a_version_without_a_high_finding_is_safe() {
+        let version = stored_version(Tier::L1, Vec::new());
+
+        assert!(unsafe_reason(&version).is_none());
+        assert!(refuse_unsafe_version(&version).is_ok());
+    }
+
+    #[test]
+    fn a_file_of_a_stored_version_is_read() {
+        let source = skill_fixture("read-version");
+        let store = temp_dir("read-version-store");
+        let added = add_skill(&options(&source, &store)).unwrap();
+
+        let location = version_location(&store, "demo", None).unwrap();
+        let text = read_version_file(&location, SKILL_FILE).unwrap();
+        assert!(text.contains("# Demo"), "{text}");
+
+        let named = version_location(&store, "demo", Some(&added.version.hash)).unwrap();
+        assert_eq!(read_version_file(&named, SKILL_FILE).unwrap(), text);
+
+        let location = version_location(&store, "demo", None).unwrap();
+        assert!(read_version_file(&location, "../SKILL.md").is_err());
+        assert!(read_version_file(&location, "/etc/passwd").is_err());
+
+        let location = version_location(&store, "demo", None).unwrap();
+        let files = list_version_markdown(&location).unwrap();
+        assert_eq!(files, vec![SKILL_FILE.to_string()]);
+    }
+
+    #[test]
+    fn an_empty_version_names_no_version() {
+        let source = skill_fixture("empty-version");
+        let store = temp_dir("empty-version-store");
+        add_skill(&options(&source, &store)).unwrap();
+
+        // A version that is named but holds no name is not the newest
+        // version, so the command fails.
+        assert!(version_location(&store, "demo", Some("")).is_err());
+        assert!(version_location(&store, "demo", Some("   ")).is_err());
+        assert!(version_location(&store, "demo", None).is_ok());
+    }
+
+    #[test]
+    fn a_version_without_a_folder_is_not_in_the_store() {
+        let source = skill_fixture("gone-version");
+        let store = temp_dir("gone-version-store");
+        let added = add_skill(&options(&source, &store)).unwrap();
+
+        let location = version_location(&store, "demo", None).unwrap();
+        assert!(stored_folder(&location).is_ok());
+
+        // The folder of the version is gone, so the version is not a
+        // version of the store any more. The copy in the store is read
+        // only, so the folder is opened before it is removed.
+        let mut permissions = fs::metadata(&location.path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&location.path, permissions).unwrap();
+        fs::remove_dir_all(&location.path).unwrap();
+        assert!(stored_folder(&location).is_err());
+        assert!(read_version_file(&location, SKILL_FILE).is_err());
+        assert!(list_version_markdown(&location).is_err());
+
+        let _ = added;
+    }
+
+    #[test]
+    fn a_file_of_a_version_is_never_read_through_a_link() {
+        let source = skill_fixture("link-version");
+        let store = temp_dir("link-version-store");
+        add_skill(&options(&source, &store)).unwrap();
+
+        let location = version_location(&store, "demo", None).unwrap();
+        let folder = location.path.clone();
+        let mut permissions = fs::metadata(&folder).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&folder, permissions).unwrap();
+
+        // A folder of the version that is a link is never read through.
+        let outside = temp_dir("link-version-outside");
+        write(&outside.join("secret.md"), "# Secret\n");
+        std::os::unix::fs::symlink(&outside, folder.join("docs")).unwrap();
+
+        let error = read_version_file(&location, "docs/secret.md").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("symlink"), "{message}");
+        assert!(!message.contains("Secret"), "{message}");
+    }
+
+    #[test]
+    fn a_skill_folder_that_is_a_link_is_never_read_through() {
+        let source = skill_fixture("link-skill-folder");
+        let store = temp_dir("link-skill-folder-store");
+        add_skill(&options(&source, &store)).unwrap();
+
+        let location = version_location(&store, "demo", None).unwrap();
+
+        // The folder of the skill is put in the place of a link that points
+        // at a folder that holds the very same version, so the file behind
+        // the link is not a file of the store.
+        let skills = store.join("skills");
+        let outside = temp_dir("link-skill-folder-outside");
+        write(&outside.join(&location.hash).join(SKILL_FILE), "# Secret\n");
+        make_writable(&skills.join("demo"));
+        fs::remove_dir_all(skills.join("demo")).unwrap();
+        std::os::unix::fs::symlink(&outside, skills.join("demo")).unwrap();
+
+        // The file behind the link is never read.
+        let error = read_version_file(&location, SKILL_FILE).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("symlink"), "{message}");
+        assert!(!message.contains("Secret"), "{message}");
+
+        // The files behind the link are never listed either.
+        let error = list_version_markdown(&location).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("symlink"), "{message}");
+        assert!(!message.contains("Secret"), "{message}");
+    }
+
+    #[test]
+    fn the_files_of_a_version_are_opened_through_its_descriptor() {
+        let source = skill_fixture("descriptor-version");
+        let store = temp_dir("descriptor-version-store");
+        add_skill(&options(&source, &store)).unwrap();
+
+        let location = version_location(&store, "demo", None).unwrap();
+        let folder = location.path.clone();
+        let mut permissions = fs::metadata(&folder).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&folder, permissions).unwrap();
+
+        // The folder of the version is opened before the link is put in
+        // the place of the folder of the guide, so the link is seen and
+        // the file behind it is never read.
+        let directory = open_version_dir(&location).unwrap();
+        let guide = std::ffi::CString::new("docs").unwrap();
+        fs::create_dir_all(folder.join("docs")).unwrap();
+        write(&folder.join("docs/guide.md"), "# Guide\n");
+        let outside = temp_dir("descriptor-version-outside");
+        write(&outside.join("secret.md"), "# Secret\n");
+        fs::remove_dir_all(folder.join("docs")).unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("docs")).unwrap();
+
+        let error = open_relative(
+            directory.as_raw_fd(),
+            &guide,
+            true,
+            &location,
+            Path::new("docs/guide.md"),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("symlink"), "{message}");
+        assert!(!message.contains("Secret"), "{message}");
+    }
+
+    #[test]
+    fn the_list_of_a_version_is_read_through_its_descriptor() {
+        let source = skill_fixture("descriptor-list");
+        let store = temp_dir("descriptor-list-store");
+        add_skill(&options(&source, &store)).unwrap();
+
+        let location = version_location(&store, "demo", None).unwrap();
+        let folder = location.path.clone();
+        let mut permissions = fs::metadata(&folder).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&folder, permissions).unwrap();
+
+        // The folder of the version is opened before it is moved away and
+        // put in the place of a link, so the list is the list of the
+        // version and never the list of the folder that the link points
+        // at.
+        let directory = open_version_dir(&location).unwrap();
+        let outside = temp_dir("descriptor-list-outside");
+        write(&outside.join("secret.md"), "# Secret\n");
+        let moved = folder.with_extension("moved");
+        fs::rename(&folder, &moved).unwrap();
+        std::os::unix::fs::symlink(&outside, &folder).unwrap();
+
+        let mut files = Vec::new();
+        collect_markdown_at(directory.as_raw_fd(), "", &mut files, &location).unwrap();
+        assert_eq!(files, vec![SKILL_FILE.to_string()]);
     }
 
     #[test]
