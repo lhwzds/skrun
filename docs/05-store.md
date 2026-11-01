@@ -27,9 +27,9 @@ flowchart LR
   scan --> rec["records/id.json"]
 ```
 
-The id is `--id`, else the source's own name (directory name or zip stem, from the real path, so `add .` works), else the frontmatter `name` without YAML quotes when the source name is not a valid id ([Reference](03-reference.md)). So two authors' same-named skills stay apart.
+The id is `--id`, else the source's name (directory or zip stem, from the real path, so `add .` works), else the unquoted frontmatter `name` if that is not a valid id ([Reference](03-reference.md)). Two sources with the same name become versions of one id unless `--id` separates them.
 
-`records/<id>.json` lists each version: hash, `--from`, time, file and byte counts, frontmatter name and description, scripts with language and imports, findings, tier and reasons. It is written to a temporary file and renamed under the per-id lock. Identical content stores nothing new; a scan that now differs refreshes that version's scripts, findings and tier.
+`records/<id>.json` lists each version: hash, `--from`, time, file and byte counts, frontmatter name and description, scripts with language and imports, findings, tier and reasons. It is written atomically under the per-id lock. Identical content stores nothing new; a scan that now differs refreshes that version's scripts, findings and tier.
 
 <sub>Sources: [store.rs:363-539](../crates/skrun/src/store.rs#L363-L539) · [store.rs:805-895](../crates/skrun/src/store.rs#L805-L895) · [store.rs:2037-2097](../crates/skrun/src/store.rs#L2037-L2097) · [catalog.rs:1208-1233](../crates/skrun/src/catalog.rs#L1208-L1233)</sub>
 
