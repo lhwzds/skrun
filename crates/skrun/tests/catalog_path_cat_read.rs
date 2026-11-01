@@ -736,8 +736,13 @@ fn temp_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    // The clock of the system is coarse, so two tests of one process can
+    // read the same time. The counter keeps the name of every folder
+    // unique, so two tests never share a folder.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!(
-        "skrun-path-cat-test-{name}-{}-{now}",
+        "skrun-path-cat-test-{name}-{}-{now}-{count}",
         std::process::id()
     ));
     fs::create_dir_all(&root).unwrap();

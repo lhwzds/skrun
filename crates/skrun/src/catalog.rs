@@ -9,6 +9,7 @@
 //! - `SKILL_REGISTRY.md` reconciliation
 //! - catalog consistency checks
 //! - keyword search over the discovered skills
+//! - the matching and the scoring that the search of the store shares
 //! - redaction of every printed value that looks like a secret
 //!
 //! ## Must Not
@@ -787,13 +788,13 @@ pub fn check_catalog(
 pub const SEARCH_LIMIT: usize = 10;
 
 /// Maximum length of the description sentence that a search result shows.
-const SEARCH_SUMMARY_LIMIT: usize = 120;
+pub const SEARCH_SUMMARY_LIMIT: usize = 120;
 
 /// The weight of the skill id in a search score.
-const SEARCH_WEIGHT_ID: u32 = 5;
+pub const SEARCH_WEIGHT_ID: u32 = 5;
 
 /// The weight of the frontmatter name in a search score.
-const SEARCH_WEIGHT_NAME: u32 = 4;
+pub const SEARCH_WEIGHT_NAME: u32 = 4;
 
 /// The weight of the registry title in a search score.
 const SEARCH_WEIGHT_TITLE: u32 = 4;
@@ -802,13 +803,13 @@ const SEARCH_WEIGHT_TITLE: u32 = 4;
 const SEARCH_WEIGHT_SUMMARY: u32 = 3;
 
 /// The weight of the frontmatter description in a search score.
-const SEARCH_WEIGHT_DESCRIPTION: u32 = 3;
+pub const SEARCH_WEIGHT_DESCRIPTION: u32 = 3;
 
 /// The weight of a frontmatter tag in a search score.
-const SEARCH_WEIGHT_TAG: u32 = 3;
+pub const SEARCH_WEIGHT_TAG: u32 = 3;
 
 /// The weight of the entrypoint body in a search score.
-const SEARCH_WEIGHT_BODY: u32 = 1;
+pub const SEARCH_WEIGHT_BODY: u32 = 1;
 
 /// Options of a catalog search.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -971,7 +972,10 @@ pub fn render_search_json(hits: &[SearchHit]) -> Result<String> {
 /// The query is split on whitespace and every term is lowercased, so the
 /// match is case insensitive. The lowercasing is Unicode aware, so a Chinese
 /// term matches like an English one and no word segmentation is needed.
-fn search_terms(query: &str) -> Vec<String> {
+///
+/// The search of the store uses the same terms, so a query means the same
+/// thing in both searches.
+pub fn search_terms(query: &str) -> Vec<String> {
     query
         .split_whitespace()
         .map(|term| term.to_lowercase())
@@ -1008,7 +1012,10 @@ fn search_fields(dir: &Path, skill: &Skill, row: Option<&RegistryRow>) -> Vec<(S
 ///
 /// The score is the sum of the weight of every field that holds a term, so a
 /// term that occurs in the id and in the title counts for both.
-fn score_fields(fields: &[(String, u32)], terms: &[String]) -> Option<u32> {
+///
+/// The search of the store uses the same scoring, so a skill of the store
+/// and a skill of a directory are ranked by the same rules.
+pub fn score_fields(fields: &[(String, u32)], terms: &[String]) -> Option<u32> {
     let mut score = 0;
     for term in terms {
         let mut matched = false;
@@ -1092,7 +1099,10 @@ fn cell_label(cell: &str) -> String {
 /// the first exclamation mark, at the first Chinese full stop, at the first
 /// Chinese question mark, at the first Chinese exclamation mark or at the
 /// first line break; the earliest of them ends the sentence.
-fn first_sentence(text: &str, limit: usize) -> String {
+///
+/// The search of the store uses the same summary, so a skill of the store
+/// and a skill of a directory show the same text.
+pub fn first_sentence(text: &str, limit: usize) -> String {
     let redacted = redact(text);
     let mut cut = redacted.len();
     for (mark, keep) in SENTENCE_ENDS {
@@ -7092,8 +7102,15 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("skrun-catalog-{name}-{}-{now}", std::process::id()));
+        // The clock of the system is coarse, so two tests of one process can
+        // read the same time. The counter keeps the name of every folder
+        // unique, so two tests never share a folder.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "skrun-catalog-{name}-{}-{now}-{count}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).unwrap();
         root
     }

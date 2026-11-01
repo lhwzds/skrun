@@ -16,6 +16,7 @@
 //! - the content hash of a staged skill
 //! - the name of the folder of every version of a skill
 //! - the read-only copy of a stored skill
+//! - the newest version of every stored id and the text of it
 //! - the folder of a stored version and the files that it holds
 //! - the text of a file of a stored version
 //! - the threat record of every added version
@@ -48,6 +49,7 @@
 //! - a read-only stored skill copy
 //! - a threat record
 //! - a store summary
+//! - the matches of a search of the store
 //! - the folder of a stored version
 //! - the text of a file of a stored version
 //!
@@ -259,6 +261,43 @@ impl Tier {
             Tier::L0 => "L0",
             Tier::None => "none",
         }
+    }
+
+    /// The name of a tier, when the name is one of the tiers.
+    ///
+    /// The name of a tier is the name it is printed with, so a tier of a
+    /// record and a tier of the command line are the same tier.
+    pub fn from_name(name: &str) -> Option<Tier> {
+        match name {
+            "L0" => Some(Tier::L0),
+            "L1" => Some(Tier::L1),
+            "L2" => Some(Tier::L2),
+            "L3" => Some(Tier::L3),
+            "none" => Some(Tier::None),
+            _ => None,
+        }
+    }
+
+    /// The rank of the tier, where a higher rank needs more room.
+    ///
+    /// A skill without a tier is guidance and needs no room at all, so its
+    /// rank is the lowest one.
+    pub fn rank(&self) -> u8 {
+        match self {
+            Tier::None => 0,
+            Tier::L0 => 1,
+            Tier::L1 => 2,
+            Tier::L2 => 3,
+            Tier::L3 => 4,
+        }
+    }
+
+    /// Whether the tier is at most `limit`.
+    ///
+    /// A version of the tier `none` is at most every tier, so a skill that
+    /// is only guidance always passes a filter of the tier.
+    pub fn at_most(&self, limit: Tier) -> bool {
+        self.rank() <= limit.rank()
     }
 }
 
@@ -1308,21 +1347,8 @@ pub fn read_record(root: &Path, id: &str) -> Result<ThreatRecord> {
 /// Every stored skill id, with the hash and the findings of its newest
 /// version.
 pub fn list_records(root: &Path) -> Result<Vec<StoreSummary>> {
-    let directory = root.join("records");
-    if !directory.is_dir() {
-        return Ok(Vec::new());
-    }
     let mut summaries = Vec::new();
-    for path in read_dir_sorted(&directory)? {
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(record) = serde_json::from_str::<ThreatRecord>(&text) else {
-            continue;
-        };
+    for record in read_records(root)? {
         let Some(version) = record.versions.last() else {
             continue;
         };
@@ -1335,8 +1361,34 @@ pub fn list_records(root: &Path) -> Result<Vec<StoreSummary>> {
             low: count_findings(version, Severity::Low),
         });
     }
-    summaries.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(summaries)
+}
+
+/// Every record of the store, sorted by the id of the skill.
+///
+/// A record that cannot be read and a record that cannot be parsed are
+/// skipped, so a broken record never stops the listing of the store and
+/// never stops the search of the store.
+fn read_records(root: &Path) -> Result<Vec<ThreatRecord>> {
+    let directory = root.join("records");
+    if !directory.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut records = Vec::new();
+    for path in read_dir_sorted(&directory)? {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<ThreatRecord>(&text) else {
+            continue;
+        };
+        records.push(record);
+    }
+    records.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(records)
 }
 
 /// The number of findings of one severity in one version.
@@ -1479,11 +1531,273 @@ pub fn render_summaries(summaries: &[StoreSummary]) -> String {
     text
 }
 
+/// The options of a search of the store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreSearchOptions {
+    /// The raw query; every whitespace separated term has to match.
+    pub query: String,
+    /// The highest tier that a version may have; every tier when it is
+    /// `None`.
+    pub max_tier: Option<Tier>,
+    /// Whether only the versions that are safe to run are kept.
+    pub safe: bool,
+    /// The number of results to keep.
+    pub limit: usize,
+}
+
+impl StoreSearchOptions {
+    /// The options of a search for `query` without any filter.
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            max_tier: None,
+            safe: false,
+            limit: catalog::SEARCH_LIMIT,
+        }
+    }
+}
+
+/// One stored skill that matches a search of the store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoreSearchHit {
+    /// The id of the skill.
+    pub id: String,
+    /// The score of the match; a higher score is a better match.
+    pub score: u32,
+    /// The name of the skill, from its frontmatter.
+    pub title: Option<String>,
+    /// The summary of the skill; the first sentence of the description. A
+    /// summary that holds a secret is redacted, so a secret is never
+    /// printed in part.
+    pub summary: Option<String>,
+    /// The tier that the newest version suggests.
+    pub tier: Tier,
+    /// The hash that names the newest version.
+    pub hash: String,
+    /// The number of high findings of the newest version.
+    pub high: u64,
+}
+
+/// Search the newest version of every stored skill for the terms of
+/// `options`.
+///
+/// Every term of the query has to occur in at least one field of a skill, so
+/// the terms narrow the result down together. A term that occurs in several
+/// fields adds the weight of every field, so a skill that matches on its id
+/// outranks a skill that only mentions the term in its body.
+///
+/// The fields of a stored skill are its id, the name of its frontmatter, its
+/// description, its tags and the body of its `SKILL.md`. A stored skill has
+/// no registry, so the registry of a skills directory is never searched.
+///
+/// The newest version of a skill is the one that is searched, so a search
+/// shows what the store holds today and not what it held before.
+///
+/// The result is sorted by score and then by id, so the same store always
+/// gives the same result.
+pub fn search_store(root: &Path, options: &StoreSearchOptions) -> Result<Vec<StoreSearchHit>> {
+    let terms = catalog::search_terms(&options.query);
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut hits = Vec::new();
+    for record in read_records(root)? {
+        let Some(version) = record.versions.last() else {
+            continue;
+        };
+        // A version of a tier that needs more room than the user allows is
+        // never a result. A skill without a tier is guidance, so it always
+        // passes the filter of the tier.
+        if let Some(max) = options.max_tier
+            && !version.tier.at_most(max)
+        {
+            continue;
+        }
+        let high = count_findings(version, Severity::High);
+        // A safe version is a version that needs no container and no
+        // microVM and that has no finding that must not run at all. The
+        // tiers `none`, `L0` and `L1` are the only ones that are safe, so
+        // a version of the tier `L2` or `L3` is never a result of a safe
+        // search, not even when it holds no high finding at all.
+        if options.safe && (high > 0 || !version.tier.at_most(Tier::L1)) {
+            continue;
+        }
+
+        let text = stored_text(root, &record.id, version);
+        let fields = store_fields(&record.id, &text);
+        let Some(score) = catalog::score_fields(&fields, &terms) else {
+            continue;
+        };
+
+        let summary = text
+            .description
+            .as_deref()
+            .map(|description| catalog::first_sentence(description, catalog::SEARCH_SUMMARY_LIMIT))
+            .filter(|sentence| !sentence.is_empty())
+            .map(|sentence| catalog::redact(&sentence));
+
+        hits.push(StoreSearchHit {
+            id: record.id.clone(),
+            score,
+            title: text.name,
+            summary,
+            tier: version.tier,
+            hash: version.hash.clone(),
+            high,
+        });
+    }
+
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    hits.truncate(options.limit);
+    Ok(hits)
+}
+
+/// The text of a stored skill that a search reads.
+struct StoredText {
+    /// The name of the skill, from its frontmatter.
+    name: Option<String>,
+    /// The description of the skill, from its frontmatter.
+    description: Option<String>,
+    /// The tags of the skill, from its frontmatter.
+    tags: Vec<String>,
+    /// The text of the entrypoint of the skill.
+    body: String,
+}
+
+/// The text of the newest version of a stored skill.
+///
+/// The frontmatter of the stored entrypoint is the frontmatter of the skill
+/// today. A version whose entrypoint cannot be read keeps the name and the
+/// description of its record, so a search still finds the skill by its id
+/// and by its name.
+fn stored_text(root: &Path, id: &str, version: &StoredVersion) -> StoredText {
+    let body = stored_entrypoint(root, id, version).unwrap_or_default();
+    let frontmatter = catalog::parse_frontmatter(&body);
+    StoredText {
+        name: frontmatter.name.or_else(|| version.name.clone()),
+        description: frontmatter
+            .description
+            .or_else(|| version.description.clone()),
+        tags: frontmatter.tags,
+        body,
+    }
+}
+
+/// The text of the entrypoint of a stored version.
+///
+/// The file is read through the folder of the version and without following
+/// a symlink, so a file that is not part of the store is never read.
+///
+/// The file is read with the limit of a search and not with the limit of
+/// `catalog cat`, so a big `SKILL.md` is still searched and its tags and
+/// its body still match a term.
+fn stored_entrypoint(root: &Path, id: &str, version: &StoredVersion) -> Option<String> {
+    if validate_id(id).is_err() {
+        return None;
+    }
+    let location = VersionLocation {
+        id: id.to_string(),
+        hash: version.hash.clone(),
+        path: absolute_path(&root.join("skills").join(id).join(&version.hash)),
+        root: absolute_path(root),
+        version: version.clone(),
+    };
+    read_version_file_for_search(&location, SKILL_FILE).ok()
+}
+
+/// The fields of a stored skill that a search term can match.
+///
+/// Every field is lowercased once, so the terms only have to be lowercased
+/// once as well.
+fn store_fields(id: &str, text: &StoredText) -> Vec<(String, u32)> {
+    let mut fields: Vec<(String, u32)> = Vec::new();
+    fields.push((id.to_lowercase(), catalog::SEARCH_WEIGHT_ID));
+    if let Some(name) = &text.name {
+        fields.push((name.to_lowercase(), catalog::SEARCH_WEIGHT_NAME));
+    }
+    if let Some(description) = &text.description {
+        fields.push((
+            description.to_lowercase(),
+            catalog::SEARCH_WEIGHT_DESCRIPTION,
+        ));
+    }
+    for tag in &text.tags {
+        fields.push((tag.to_lowercase(), catalog::SEARCH_WEIGHT_TAG));
+    }
+    fields.push((text.body.to_lowercase(), catalog::SEARCH_WEIGHT_BODY));
+    fields
+}
+
+/// Render the hits of a search of the store as text.
+///
+/// Every printed value goes through the redaction helper, so a value that
+/// looks like a secret never reaches the output.
+pub fn render_store_search_text(hits: &[StoreSearchHit]) -> String {
+    if hits.is_empty() {
+        return "no skills match\n".to_string();
+    }
+
+    let mut out = String::new();
+    for hit in hits {
+        let label = hit.title.clone().unwrap_or_else(|| hit.id.clone());
+        out.push_str(&format!(
+            "{}  {}  {}  {}\n",
+            catalog::redact(&hit.id),
+            hit.tier.as_str(),
+            catalog::redact(&hit.hash),
+            catalog::redact(&label)
+        ));
+        if let Some(summary) = &hit.summary {
+            out.push_str(&format!("  {}\n", catalog::redact(summary)));
+        }
+    }
+    out
+}
+
+/// Render the hits of a search of the store as JSON.
+///
+/// The values go through the same redaction helper as the text output.
+pub fn render_store_search_json(hits: &[StoreSearchHit]) -> Result<String> {
+    let redacted: Vec<StoreSearchHit> = hits.iter().map(redacted_store_hit).collect();
+    let mut text = serde_json::to_string_pretty(&redacted)?;
+    text.push('\n');
+    Ok(text)
+}
+
+/// A search hit of the store with every value that goes through the
+/// redaction helper.
+fn redacted_store_hit(hit: &StoreSearchHit) -> StoreSearchHit {
+    StoreSearchHit {
+        id: catalog::redact(&hit.id),
+        score: hit.score,
+        title: hit.title.as_deref().map(catalog::redact),
+        summary: hit.summary.as_deref().map(catalog::redact),
+        tier: hit.tier,
+        hash: catalog::redact(&hit.hash),
+        high: hit.high,
+    }
+}
+
 /// The largest file that the `catalog cat` command prints.
 ///
 /// A file of a stored skill is read as a whole, so a file that is bigger
 /// than this is refused instead of filling the memory of the command.
 pub const MAX_CAT_BYTES: u64 = 2 * 1000 * 1000;
+
+/// The largest file that a search of the store reads.
+///
+/// The limit of `catalog cat` is not the limit of a search: a search only
+/// looks for a term in the text of a skill and never prints that text, so
+/// a big `SKILL.md` is still searched. The limit keeps a huge file from
+/// filling the memory of the command, so the text of a file that is bigger
+/// than this is cut off instead of being read as a whole.
+pub const MAX_SEARCH_BYTES: u64 = 16 * 1000 * 1000;
 
 /// Where a stored version of a skill lives.
 ///
@@ -1683,6 +1997,45 @@ pub fn read_version_file(location: &VersionLocation, relative: &str) -> Result<S
         )
     })?;
     Ok(text)
+}
+
+/// The text of a file of a stored version, for a search of the store.
+///
+/// The file is opened like the file of `catalog cat`, so a symlink is
+/// never followed and a file outside of the store is never read. The
+/// limit of `catalog cat` is not used here: a search matches a term in
+/// the text of a skill and never prints that text, so a big `SKILL.md` is
+/// still searched and its tags and its body still match.
+///
+/// A file that is bigger than `MAX_SEARCH_BYTES` is cut off instead of
+/// being refused, so a big file never fills the memory of the command and
+/// never silences every term of the file.
+fn read_version_file_for_search(location: &VersionLocation, relative: &str) -> Result<String> {
+    let relative = safe_relative(relative)?;
+    let path = location.path.join(&relative);
+    let file = open_version_file(location, &relative)?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+    if !metadata.is_file() {
+        bail!(
+            "the file `{}` is not a file of the stored version `{}`",
+            catalog::redact(&relative.to_string_lossy()),
+            catalog::redact(&location.hash)
+        );
+    }
+    let mut bytes = Vec::new();
+    // The file is read with a limit, so a file that grew after it was
+    // opened never fills the memory of the command.
+    file.take(MAX_SEARCH_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read `{}`", catalog::redact_path(&path)))?;
+    if bytes.len() as u64 > MAX_SEARCH_BYTES {
+        bytes.truncate(MAX_SEARCH_BYTES as usize);
+    }
+    // The bytes that are not text are not searched, but the text that can
+    // be read is kept, so a term in it still matches.
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// The folders of the store that hold a version of a skill.
@@ -4206,8 +4559,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        // The clock of the system is coarse, so two tests of one process can
+        // read the same time. The counter keeps the name of every folder
+        // unique, so two tests never share a folder.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "skrun-store-test-{name}-{}-{now}",
+            "skrun-store-test-{name}-{}-{now}-{count}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();
@@ -5511,6 +5869,37 @@ mod tests {
 
         assert!(unsafe_reason(&version).is_none());
         assert!(refuse_unsafe_version(&version).is_ok());
+    }
+
+    #[test]
+    fn a_safe_search_keeps_only_the_versions_that_need_no_container() {
+        let source = temp_dir("safe-search-container").join("container");
+        write(
+            &source.join("SKILL.md"),
+            "---\nname: container\ndescription: A widget that needs a container.\n---\n\n# Container\n",
+        );
+        write(
+            &source.join("run.py"),
+            "import requests\n\nprint(requests)\n",
+        );
+        let store = temp_dir("safe-search-store");
+        let added = add_skill(&options(&source, &store)).unwrap();
+
+        // The skill needs a container and holds no high finding at all, so
+        // it is a result of a search without a filter.
+        assert_eq!(added.version.tier, Tier::L2);
+        assert_eq!(count_findings(&added.version, Severity::High), 0);
+
+        let mut search = StoreSearchOptions::new("widget");
+        let hits = search_store(&store, &search).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].tier, Tier::L2);
+
+        // A safe search keeps the versions that need no container, so the
+        // skill is never a result of a safe search.
+        search.safe = true;
+        let hits = search_store(&store, &search).unwrap();
+        assert!(hits.is_empty(), "{hits:?}");
     }
 
     #[test]

@@ -339,12 +339,26 @@ struct CatalogCheckCommand {
     index: Option<PathBuf>,
 }
 
+/// Where a search looks for the skills.
+#[derive(Debug, Clone, PartialEq)]
+enum SearchTarget {
+    /// The skills of a directory.
+    Directory(PathBuf),
+    /// The newest version of every stored skill.
+    Store {
+        /// The store root, when the user named one.
+        store: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct CatalogSearchCommand {
-    dir: PathBuf,
+    target: SearchTarget,
     query: String,
     kind: Option<catalog::SkillKind>,
     has_scripts: bool,
+    max_tier: Option<store::Tier>,
+    safe: bool,
     limit: usize,
     json: bool,
 }
@@ -692,44 +706,113 @@ fn parse_catalog_check(mut cursor: Cursor) -> Result<CatalogCheckCommand> {
 /// The first positional argument is the skills directory, every other
 /// positional argument is a part of the query. The query is matched as one
 /// text, so a Chinese term and an English term can be searched for together.
+///
+/// The `--in-store` option searches the store instead of a directory, so
+/// every positional argument is a part of the query then. The `--store`
+/// option names the store of that search; without it the default store is
+/// used. The store is only searched when `--in-store` is given, so a
+/// `--store` of a search of a directory is a usage error.
+///
+/// The value of the `--store` option is a directory and not another option,
+/// so a `--store` without a value and a `--store` whose value is an option
+/// are usage errors. The directory itself is checked when the search runs,
+/// because the command line is read without the file system.
+/// Parse the `--store` option of a search.
+///
+/// The value of the option is a directory and not another option, so a
+/// `--store` without a value and a `--store` whose value is an option are
+/// usage errors.
+fn parse_search_store(cursor: &mut Cursor) -> Result<PathBuf> {
+    let value = cursor.next_required("--store value")?;
+    // The value of the option is a directory and not another option, so a
+    // `--store` that is followed by an option never names a store.
+    if value.starts_with("--") {
+        return usage(format!(
+            "--store needs a directory, not the option `{}`",
+            catalog::redact(&value)
+        ));
+    }
+    Ok(PathBuf::from(value))
+}
+
 fn parse_catalog_search(mut cursor: Cursor) -> Result<CatalogSearchCommand> {
     let mut kind = None;
     let mut has_scripts = false;
+    let mut max_tier = None;
+    let mut safe = false;
     let mut limit = catalog::SEARCH_LIMIT;
     let mut json = false;
-    let mut dir = None;
-    let mut query = Vec::new();
+    let mut in_store = false;
+    let mut store_root = None;
+    let mut positionals = Vec::new();
 
     while let Some(arg) = cursor.next() {
         match arg.as_str() {
+            "--in-store" => in_store = true,
+            "--store" => store_root = Some(parse_search_store(&mut cursor)?),
             "--kind" => kind = Some(parse_search_kind(&cursor.next_required("--kind value")?)?),
             "--has-scripts" => has_scripts = true,
+            "--max-tier" => {
+                max_tier = Some(parse_max_tier(&cursor.next_required("--max-tier value")?)?)
+            }
+            "--safe" => safe = true,
             "--limit" => limit = parse_limit(&cursor.next_required("--limit value")?)?,
             "--json" => json = true,
             value if value.starts_with('-') => {
                 return usage(format!("unknown option `{}`", catalog::redact(value)));
             }
-            value => {
-                if dir.is_none() {
-                    dir = Some(PathBuf::from(value));
-                } else {
-                    query.push(value.to_string());
-                }
-            }
+            value => positionals.push(value.to_string()),
         }
     }
 
-    let dir = dir.ok_or_else(|| usage_error("missing skills directory"))?;
-    let query = query.join(" ");
+    // The store is only searched when the user asks for it with
+    // `--in-store`. A `--store` of a search of a directory is refused, so a
+    // search never looks at a store that the user did not ask for.
+    if !in_store && store_root.is_some() {
+        return usage("--store needs --in-store");
+    }
+
+    let mut parts = positionals.into_iter();
+    let (dir, query) = if in_store {
+        (PathBuf::new(), parts.collect::<Vec<String>>().join(" "))
+    } else {
+        let dir = parts
+            .next()
+            .map(PathBuf::from)
+            .ok_or_else(|| usage_error("missing skills directory"))?;
+        (dir, parts.collect::<Vec<String>>().join(" "))
+    };
     if query.split_whitespace().next().is_none() {
         return usage("missing query");
     }
 
+    // The filters of the store and the filters of a directory are two
+    // things, so a filter of one of them is never used for the other.
+    let target = if in_store {
+        if kind.is_some() {
+            return usage("--kind needs a skills directory");
+        }
+        if has_scripts {
+            return usage("--has-scripts needs a skills directory");
+        }
+        SearchTarget::Store { store: store_root }
+    } else {
+        if max_tier.is_some() {
+            return usage("--max-tier needs --in-store");
+        }
+        if safe {
+            return usage("--safe needs --in-store");
+        }
+        SearchTarget::Directory(dir)
+    };
+
     Ok(CatalogSearchCommand {
-        dir,
+        target,
         query,
         kind,
         has_scripts,
+        max_tier,
+        safe,
         limit,
         json,
     })
@@ -929,6 +1012,21 @@ fn parse_search_kind(value: &str) -> Result<catalog::SkillKind> {
     }
 }
 
+/// The highest tier that a search of the store keeps.
+///
+/// Only the tiers of a skill are named, so a tier without a script is not
+/// a tier that a filter can ask for.
+fn parse_max_tier(value: &str) -> Result<store::Tier> {
+    match store::Tier::from_name(value) {
+        Some(store::Tier::None) => usage("--max-tier takes L0, L1, L2 or L3"),
+        Some(tier) => Ok(tier),
+        None => usage(format!(
+            "invalid --max-tier value `{}`",
+            catalog::redact(value)
+        )),
+    }
+}
+
 /// The number of results a search keeps.
 fn parse_limit(value: &str) -> Result<usize> {
     let limit = value.parse::<usize>().map_err(|_| {
@@ -986,20 +1084,61 @@ fn run_catalog_search(options: &CatalogSearchCommand) -> Result<i32> {
 /// The results are the only thing the command prints; the status is 1 when
 /// no skill matches the query.
 fn run_catalog_search_to(options: &CatalogSearchCommand, out: &mut dyn Write) -> Result<i32> {
-    let search = catalog::SearchOptions {
-        query: options.query.clone(),
-        kind: options.kind,
-        has_scripts: options.has_scripts,
-        limit: options.limit,
-    };
-    let hits = catalog::search_skills(&options.dir, &search)?;
-    if options.json {
-        write!(out, "{}", catalog::render_search_json(&hits)?)?;
-    } else {
-        write!(out, "{}", catalog::render_search_text(&hits))?;
+    match &options.target {
+        SearchTarget::Directory(dir) => {
+            let search = catalog::SearchOptions {
+                query: options.query.clone(),
+                kind: options.kind,
+                has_scripts: options.has_scripts,
+                limit: options.limit,
+            };
+            let hits = catalog::search_skills(dir, &search)?;
+            if options.json {
+                write!(out, "{}", catalog::render_search_json(&hits)?)?;
+            } else {
+                write!(out, "{}", catalog::render_search_text(&hits))?;
+            }
+            out.flush()?;
+            Ok(if hits.is_empty() { 1 } else { 0 })
+        }
+        SearchTarget::Store { store: store_root } => {
+            // The store of the user is a directory that exists, so a
+            // `--store` that names a file or a path that is not there at
+            // all is a usage error and never a search of nothing.
+            if let Some(named) = store_root {
+                check_store_directory(named)?;
+            }
+            let root = store::resolve_store_root(store_root.as_deref())?;
+            let search = store::StoreSearchOptions {
+                query: options.query.clone(),
+                max_tier: options.max_tier,
+                safe: options.safe,
+                limit: options.limit,
+            };
+            let hits = store::search_store(&root, &search)?;
+            if options.json {
+                write!(out, "{}", store::render_store_search_json(&hits)?)?;
+            } else {
+                write!(out, "{}", store::render_store_search_text(&hits))?;
+            }
+            out.flush()?;
+            Ok(if hits.is_empty() { 1 } else { 0 })
+        }
     }
-    out.flush()?;
-    Ok(if hits.is_empty() { 1 } else { 0 })
+}
+
+/// Check the store of a search of the store.
+///
+/// The store of a search is a directory that exists, so a `--store` that
+/// names a file or a path that is not there at all is a usage error.
+fn check_store_directory(root: &Path) -> Result<()> {
+    if !root.is_dir() {
+        return usage(format!(
+            "--store `{}` is not a directory",
+            catalog::redact_path(root)
+        ));
+    }
+    Ok(())
 }
 
 /// Run the `catalog check` command and return its exit status.
@@ -1248,6 +1387,7 @@ fn print_usage() {
   skrun catalog registry <dir> [--registry <file>] [--write]
   skrun catalog check <dir> [--registry <file>] [--index <file>]
   skrun catalog search <dir> <query>... [--kind folder|flat] [--has-scripts] [--limit N] [--json]
+  skrun catalog search --in-store [--store <dir>] <query>... [--max-tier L0|L1|L2|L3] [--safe] [--limit N] [--json]
   skrun catalog add <dir|zip|github:owner/repo[@ref][//subpath]> [--store <dir>] [--id <id>] [--from <provenance>] [--json]
   skrun catalog inspect <id> [--store <dir>] [--json]
   skrun catalog inspect --list [--store <dir>] [--json]
@@ -1913,12 +2053,123 @@ mod tests {
         let Command::Catalog(CatalogCommand::Search(command)) = command else {
             panic!("expected catalog search command");
         };
-        assert_eq!(command.dir, PathBuf::from("skills"));
+        assert_eq!(
+            command.target,
+            SearchTarget::Directory(PathBuf::from("skills"))
+        );
         assert_eq!(command.query, "ai \u{6a21}\u{578b}");
         assert_eq!(command.kind, Some(catalog::SkillKind::Folder));
         assert!(command.has_scripts);
         assert_eq!(command.limit, 5);
         assert!(command.json);
+    }
+
+    #[test]
+    fn parses_catalog_search_of_the_store_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "--in-store".to_string(),
+            "--store".to_string(),
+            "data/store".to_string(),
+            "--max-tier".to_string(),
+            "L1".to_string(),
+            "--safe".to_string(),
+            "--limit".to_string(),
+            "5".to_string(),
+            "--json".to_string(),
+            "guide".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Search(command)) = command else {
+            panic!("expected catalog search command");
+        };
+        assert_eq!(
+            command.target,
+            SearchTarget::Store {
+                store: Some(PathBuf::from("data/store"))
+            }
+        );
+        assert_eq!(command.query, "guide");
+        assert_eq!(command.max_tier, Some(store::Tier::L1));
+        assert!(command.safe);
+        assert_eq!(command.limit, 5);
+        assert!(command.json);
+    }
+
+    #[test]
+    fn parses_catalog_search_of_the_default_store_command() {
+        let command = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "--in-store".to_string(),
+            "guide".to_string(),
+        ])
+        .unwrap();
+
+        let Command::Catalog(CatalogCommand::Search(command)) = command else {
+            panic!("expected catalog search command");
+        };
+        assert_eq!(command.target, SearchTarget::Store { store: None });
+        assert_eq!(command.query, "guide");
+    }
+
+    #[test]
+    fn a_search_of_the_store_without_a_query_is_a_usage_error() {
+        let error = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "--in-store".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(error.is::<UsageError>(), "{error:?}");
+    }
+
+    #[test]
+    fn a_filter_of_the_store_without_the_store_is_a_usage_error() {
+        let error = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "--max-tier".to_string(),
+            "L1".to_string(),
+            "skills".to_string(),
+            "guide".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(error.is::<UsageError>(), "{error:?}");
+    }
+
+    #[test]
+    fn a_store_without_the_in_store_option_is_a_usage_error() {
+        let error = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "--store".to_string(),
+            "data/store".to_string(),
+            "skills".to_string(),
+            "guide".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(error.is::<UsageError>(), "{error:?}");
+    }
+
+    #[test]
+    fn a_store_that_is_followed_by_an_option_is_a_usage_error() {
+        let error = parse(vec![
+            "catalog".to_string(),
+            "search".to_string(),
+            "--in-store".to_string(),
+            "--store".to_string(),
+            "--safe".to_string(),
+            "widget".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(error.is::<UsageError>(), "{error:?}");
     }
 
     #[test]
@@ -2045,8 +2296,15 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("skrun-main-{name}-{}-{now}", std::process::id()));
+        // The clock of the system is coarse, so two tests of one process can
+        // read the same time. The counter keeps the name of every folder
+        // unique, so two tests never share a folder.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "skrun-main-{name}-{}-{now}-{count}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).unwrap();
         root
     }
