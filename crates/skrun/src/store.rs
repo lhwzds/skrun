@@ -112,6 +112,12 @@ pub const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long an add waits between two tries for the lock of a skill id.
 const LOCK_RETRY: Duration = Duration::from_millis(50);
 
+/// The time after which a lock belongs to an add that never finished.
+///
+/// A lock that is older than ten minutes is stale, so the lock is removed
+/// and the add goes on.
+const LOCK_STALE_AFTER: Duration = Duration::from_secs(600);
+
 /// Folders that are never copied out of a skill directory.
 const SKIPPED_FOLDERS: [&str; 5] = [".git", ".venv", "__pycache__", "node_modules", "target"];
 
@@ -650,17 +656,7 @@ fn count_findings(version: &StoredVersion, severity: Severity) -> u64 {
 /// The keys of an object are the names of the fields of the record, so they
 /// hold no user text.
 pub fn redact_json_strings(value: &Value) -> Value {
-    match value {
-        Value::String(text) => Value::String(catalog::redact(text)),
-        Value::Array(items) => Value::Array(items.iter().map(redact_json_strings).collect()),
-        Value::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .map(|(key, item)| (key.clone(), redact_json_strings(item)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
+    catalog::redact_json_strings(value)
 }
 
 /// The threat record of a skill id, with every string value redacted.
@@ -1349,6 +1345,12 @@ struct ScannedScript {
     path: String,
     /// The modules that the script can import from the skill itself.
     local_modules: BTreeSet<String>,
+    /// The language that the script really runs as.
+    ///
+    /// A script whose shebang and whose extension disagree runs as the
+    /// interpreter of its shebang, so the more restrictive of the two
+    /// languages is the one that counts for the tier.
+    effective_language: &'static str,
 }
 
 /// The scripts and the findings of a skill root.
@@ -1370,7 +1372,25 @@ fn scan_skill(root: &Path) -> Result<Scan> {
             .with_context(|| format!("read `{}`", catalog::redact(relative)))?;
         let binary = is_binary(relative, &content);
         let text = String::from_utf8_lossy(&content);
-        let language = script_language(relative, &content);
+        let extension_language = catalog::script_language(Path::new(relative));
+        let interpreter = catalog::shebang_language(&text);
+        let language = script_language(relative, &text);
+        // A file whose shebang and whose extension disagree is run by the
+        // interpreter of its shebang, so the more restrictive of the two
+        // languages is the one that counts.
+        let mut effective_language = language;
+        if let (Some(extension), Some(interpreter)) = (extension_language, interpreter)
+            && extension != interpreter
+        {
+            effective_language = Some(stricter_language(extension, interpreter));
+            findings.push(Finding {
+                rule: "mismatched_shebang".to_string(),
+                severity: Severity::Medium,
+                path: catalog::redact(relative),
+                line: Some(1),
+                detail: None,
+            });
+        }
         if let Some(language) = language {
             let imports = if language == "python" {
                 catalog::python_imports(&text)
@@ -1391,6 +1411,7 @@ fn scan_skill(root: &Path) -> Result<Scan> {
                 },
                 path: relative.clone(),
                 local_modules: local_modules(&modules, relative),
+                effective_language: effective_language.unwrap_or(language),
             });
         }
         if binary {
@@ -1405,9 +1426,11 @@ fn scan_skill(root: &Path) -> Result<Scan> {
         // Every file is scanned, also a file that holds bytes that are not
         // text. The bytes are cut into lines and every line is read as text,
         // so a secret inside a binary payload is found as well.
+        // A type of Python holds no secret, but only in a file of python.
+        let python = catalog::is_python_file(Path::new(relative), &text);
         for (index, line) in content.split(|byte| *byte == b'\n').enumerate() {
             let line = String::from_utf8_lossy(line);
-            if catalog::line_has_secret(&line) {
+            if catalog::line_has_secret(&line, python) {
                 findings.push(Finding {
                     rule: "secret".to_string(),
                     severity: Severity::Medium,
@@ -1613,42 +1636,26 @@ fn shadowed_modules(files: &[String], scripts: &[ScannedScript]) -> Vec<(String,
 ///
 /// An interpreter that is not known is the language `other`, and a script of
 /// an unknown language needs a container.
-fn script_language(relative: &str, content: &[u8]) -> Option<&'static str> {
+fn script_language(relative: &str, text: &str) -> Option<&'static str> {
     if let Some(language) = catalog::script_language(Path::new(relative)) {
         return Some(language);
     }
-    shebang_language(content)
+    catalog::shebang_language(text)
 }
 
-/// The language of a file that starts with a `#!` line.
+/// The language that a script really runs as.
 ///
-/// The interpreter of the line names the language of the script. A shell
-/// interpreter is a shell script, a python interpreter is a python script
-/// and a javascript interpreter is a javascript script. Every other
-/// interpreter is a script of an unknown language.
-fn shebang_language(content: &[u8]) -> Option<&'static str> {
-    let first = content.split(|byte| *byte == b'\n').next()?;
-    let line = String::from_utf8_lossy(first);
-    let rest = line.strip_prefix("#!")?;
-    let mut words = rest.split_whitespace();
-    let mut interpreter = words.next()?;
-    if Path::new(interpreter)
-        .file_name()
-        .and_then(|name| name.to_str())
-        == Some("env")
-    {
-        interpreter = words.next()?;
+/// A script whose shebang and whose extension disagree is run by the
+/// interpreter of its shebang, so the more restrictive of the two languages
+/// is the one that counts. A python script is the only script that can
+/// stay in a plain process, so a script that is not python needs a
+/// container.
+fn stricter_language(extension: &'static str, interpreter: &'static str) -> &'static str {
+    if extension == "python" {
+        interpreter
+    } else {
+        extension
     }
-    let name = Path::new(interpreter)
-        .file_name()
-        .and_then(|name| name.to_str())?
-        .to_ascii_lowercase();
-    Some(match name.as_str() {
-        "sh" | "bash" | "zsh" | "dash" => "shell",
-        name if name.starts_with("python") => "python",
-        "node" | "deno" | "bun" => "javascript",
-        _ => "other",
-    })
 }
 
 /// The folder of a path of the skill.
@@ -1713,15 +1720,23 @@ fn suggest_tier(
     }
 
     for scanned in scripts {
-        if scanned.script.language != "python" {
+        if scanned.effective_language == "python" {
+            continue;
+        }
+        if scanned.effective_language == scanned.script.language {
             reasons.insert(format!(
                 "{} script {}",
                 scanned.script.language, scanned.script.path
             ));
+        } else {
+            reasons.insert(format!(
+                "{} script {} (the shebang does not match the extension)",
+                scanned.effective_language, scanned.script.path
+            ));
         }
     }
     for scanned in scripts {
-        if scanned.script.language != "python" {
+        if scanned.effective_language != "python" {
             continue;
         }
         for import in &scanned.script.imports {
@@ -1777,6 +1792,9 @@ fn suggest_tier(
                 finding.detail.as_deref().unwrap_or("a module"),
                 finding.path
             )),
+            // An import whose name is only known at the time of the call
+            // can name any module, so the skill needs a container.
+            "dynamic_import" => Some("dynamic_import".to_string()),
             _ => None,
         };
         if let Some(reason) = reason {
@@ -1788,7 +1806,7 @@ fn suggest_tier(
     }
 
     for scanned in scripts {
-        if scanned.script.language != "python" {
+        if scanned.effective_language != "python" {
             continue;
         }
         for import in &scanned.script.imports {
@@ -1806,7 +1824,7 @@ fn suggest_tier(
 
     if scripts
         .iter()
-        .any(|scanned| scanned.script.language == "python")
+        .any(|scanned| scanned.effective_language == "python")
     {
         return (Tier::L0, vec!["python scripts only".to_string()]);
     }
@@ -2037,11 +2055,26 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 /// The lock of one skill id.
 ///
 /// The lock is a file that only one process can create, so two adds of the
-/// same skill id never write the same record at the same time. The file goes
-/// away with the lock, also when the add fails.
+/// same skill id never write the same record at the same time.
+///
+/// The process that took the lock holds the lock of the file as well, so a
+/// process that wants to reclaim a stale lock has to wait for the process
+/// that holds it. The file holds the pid of the process that took it, so a
+/// lock of a process that is gone can be told from a lock of a process that
+/// runs. A lock that is older than ten minutes is reclaimed all the same,
+/// because the add that took it never finished.
+///
+/// The file goes away with the lock, also when the add fails. The file is
+/// only removed when it is still the file of this process, so the release of
+/// a lock never removes the lock of another process.
 #[derive(Debug)]
 struct Lock {
     path: PathBuf,
+    /// The open file that holds the lock of the file.
+    ///
+    /// The handle stays open as long as the lock is held, so the lock of
+    /// the file is held as long as the add works.
+    file: Option<fs::File>,
 }
 
 impl Lock {
@@ -2066,11 +2099,29 @@ impl Lock {
                 .create_new(true)
                 .open(&path)
             {
-                Ok(_) => {
+                Ok(mut file) => {
                     let _ = set_file_mode(&path, RECORD_MODE);
-                    return Ok(Self { path });
+                    // The lock of the file keeps a process that reclaims a
+                    // stale lock away, so the lock of this process stays
+                    // while the add works. The wait is short, because only
+                    // a process that reads the lock of the file can hold
+                    // it.
+                    lock_file(&file);
+                    // The lock holds the pid of the process that took it,
+                    // so a lock of a process that is gone can be told from
+                    // a lock of a process that runs.
+                    let _ = writeln!(file, "{}", std::process::id());
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                    });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if remove_stale_lock(&path) {
+                        // The lock was stale, so the add goes on without
+                        // waiting for it.
+                        continue;
+                    }
                     if Instant::now() >= deadline {
                         bail!(
                             "the skill id `{}` is locked by another add, the lock `{}` was held for {} seconds",
@@ -2090,9 +2141,240 @@ impl Lock {
     }
 }
 
+/// Whether a lock is stale and can be removed.
+///
+/// A lock of a process that is gone is stale, and a lock that is older than
+/// ten minutes is stale as well, because the add that took it never
+/// finished.
+///
+/// The lock of the file is taken before the lock is read, so a young lock
+/// that a process holds is never removed: the process works on the skill,
+/// so its lock is no lock of a process that is gone. A lock that is older
+/// than ten minutes is removed all the same, because a lock that is that
+/// old is a lock of an add that never finished.
+///
+/// The file that is removed is the file that was read, so a lock that
+/// another add took in the meantime stays.
+fn remove_stale_lock(path: &Path) -> bool {
+    let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(path) else {
+        return false;
+    };
+    // The lock of the file is taken, so a process that reclaims a lock at
+    // the same time waits for this one.
+    let held = take_lock(&file);
+    // The age of the lock is read before the lock is judged, so a lock
+    // that is old is removed even when a process holds the lock of the
+    // file.
+    let old = older_than(path, LOCK_STALE_AFTER);
+    if !old && !held {
+        // A process holds the lock of the file and the lock is young, so
+        // the process works on the skill and its lock is no stale lock.
+        return false;
+    }
+    let Some(content) = read_lock(&file) else {
+        return false;
+    };
+    if !same_file(&file, path) {
+        // The path names another file now, so the lock that was read is no
+        // lock of the path.
+        return false;
+    }
+    if !stale_lock(path, &content) {
+        return false;
+    }
+    fs::remove_file(path).is_ok()
+}
+
+/// Whether a file is older than the given time.
+///
+/// The age of a file is the time since it was written the last time, so a
+/// lock that is older than ten minutes is a lock of an add that never
+/// finished.
+fn older_than(path: &Path, age: Duration) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed > age)
+}
+
+/// Whether the lock of the file was taken without waiting.
+///
+/// The lock of the file is the lock of the system, so a process that holds
+/// it keeps every other process away from the file. The lock is taken
+/// without waiting, so a process never waits for another one here.
+///
+/// A process that holds the lock of the file works on the skill, so its
+/// lock is no stale lock.
+///
+/// Without a system of unix there is no such lock, so the file is never
+/// locked by another process.
+#[cfg(unix)]
+fn take_lock(file: &fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    // The lock is exclusive and it is taken without waiting.
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) == 0 }
+}
+
+/// Whether the lock of the file was taken without waiting.
+///
+/// Without a system of unix there is no such lock, so the file is never
+/// locked by another process.
+#[cfg(not(unix))]
+fn take_lock(_file: &fs::File) -> bool {
+    true
+}
+
+/// Whether the lock of the file was taken, waiting for the process that
+/// holds it.
+///
+/// The wait is short, because the process that holds the lock of the file
+/// only reads the file and goes away.
+#[cfg(unix)]
+fn lock_file(file: &fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    // The lock is exclusive and it waits for the process that holds it.
+    const LOCK_EX: i32 = 2;
+    unsafe { flock(file.as_raw_fd(), LOCK_EX) == 0 }
+}
+
+/// Whether the lock of the file was taken, waiting for the process that
+/// holds it.
+///
+/// Without a system of unix there is no such lock, so the file is never
+/// locked by another process.
+#[cfg(not(unix))]
+fn lock_file(_file: &fs::File) -> bool {
+    true
+}
+
+/// Whether the path names the file that was opened.
+///
+/// The path can name another file when another process took the lock in
+/// the meantime, so the file that is removed is the file that was read.
+#[cfg(unix)]
+fn same_file(file: &fs::File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(opened) = file.metadata() else {
+        return false;
+    };
+    let Ok(current) = fs::metadata(path) else {
+        return false;
+    };
+    opened.dev() == current.dev() && opened.ino() == current.ino()
+}
+
+/// Whether the path names the file that was opened.
+///
+/// Without a system of unix the files are told apart by their text, so a
+/// path that holds another text names another file.
+#[cfg(not(unix))]
+fn same_file(file: &fs::File, path: &Path) -> bool {
+    let Some(opened) = read_lock(file) else {
+        return false;
+    };
+    let Ok(current) = fs::read_to_string(path) else {
+        return false;
+    };
+    opened == current
+}
+
+/// The text of a lock file.
+///
+/// The text is read from the open file, so the text is the text of the file
+/// that was opened and not the text of another file that took its place.
+fn read_lock(file: &fs::File) -> Option<String> {
+    use std::io::Read;
+    let mut content = String::new();
+    let mut handle = file;
+    handle.read_to_string(&mut content).ok()?;
+    Some(content)
+}
+
+/// Whether a lock is stale.
+///
+/// A lock holds the pid of the process that took it. A lock of a process
+/// that is gone is stale, and a lock that is older than ten minutes is
+/// stale as well.
+///
+/// A young lock that a process holds is no stale lock: the process works
+/// on the skill, so the lock is no lock of a process that is gone. The
+/// lock of the file is taken before the lock is read, so only a lock that
+/// no process holds is read here. A lock that is older than ten minutes is
+/// stale all the same, because the add that took it never finished.
+fn stale_lock(path: &Path, content: &str) -> bool {
+    if older_than(path, LOCK_STALE_AFTER) {
+        return true;
+    }
+    let Some(pid) = content
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<i32>().ok())
+    else {
+        // A lock that holds no pid is no lock of a known process, so it is
+        // only stale when it is old.
+        return false;
+    };
+    !process_is_alive(pid)
+}
+
+/// Whether a process with the given pid is alive.
+///
+/// The check is the `kill` of the system with the signal `0`, so the
+/// process is never touched. The check fails with `ESRCH` when no process
+/// holds the pid.
+#[cfg(unix)]
+fn process_is_alive(pid: i32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    // The signal `0` asks for the state of the process and touches
+    // nothing.
+    if unsafe { kill(pid, 0) } == 0 {
+        return true;
+    }
+    // The check fails with `ESRCH` when no process holds the pid. Every
+    // other failure means that the process is there but that the check may
+    // not ask it anything.
+    std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
+}
+
+/// The number of the error of the system that says that there is no such
+/// process.
+///
+/// The number is the same on every system of unix.
+#[cfg(unix)]
+const ESRCH: i32 = 3;
+
+/// Whether a process with the given pid is alive.
+///
+/// Without a system of unix there is no way to ask, so every process is
+/// assumed to be alive.
+#[cfg(not(unix))]
+fn process_is_alive(_pid: i32) -> bool {
+    true
+}
+
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        // The lock of the file is still held, so no other process can
+        // remove the file, and the file is only removed when it is still
+        // the file of this process, so the release of a lock never removes
+        // the lock of another process.
+        if let Some(file) = &self.file
+            && same_file(file, &self.path)
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+        // The lock of the file goes away with the handle of the file.
     }
 }
 
@@ -2454,19 +2736,95 @@ mod tests {
 
     #[test]
     fn a_script_without_an_extension_is_read_by_its_shebang() {
-        assert_eq!(shebang_language(b"#!/bin/sh\necho hello\n"), Some("shell"));
-        assert_eq!(shebang_language(b"#!/bin/bash\n"), Some("shell"));
-        assert_eq!(shebang_language(b"#!/bin/zsh\n"), Some("shell"));
-        assert_eq!(shebang_language(b"#!/bin/dash\n"), Some("shell"));
         assert_eq!(
-            shebang_language(b"#!/usr/bin/env python3\n"),
+            catalog::shebang_language("#!/bin/sh\necho hello\n"),
+            Some("shell")
+        );
+        assert_eq!(catalog::shebang_language("#!/bin/bash\n"), Some("shell"));
+        assert_eq!(catalog::shebang_language("#!/bin/zsh\n"), Some("shell"));
+        assert_eq!(catalog::shebang_language("#!/bin/dash\n"), Some("shell"));
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env python3\n"),
             Some("python")
         );
-        assert_eq!(shebang_language(b"#!/usr/bin/node\n"), Some("javascript"));
-        assert_eq!(shebang_language(b"#!/usr/bin/deno\n"), Some("javascript"));
-        assert_eq!(shebang_language(b"#!/usr/bin/bun\n"), Some("javascript"));
-        assert_eq!(shebang_language(b"#!/usr/bin/perl\n"), Some("other"));
-        assert_eq!(shebang_language(b"echo hello\n"), None);
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/node\n"),
+            Some("javascript")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/deno\n"),
+            Some("javascript")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/bun\n"),
+            Some("javascript")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/perl\n"),
+            Some("other")
+        );
+        assert_eq!(catalog::shebang_language("echo hello\n"), None);
+    }
+
+    #[test]
+    fn a_shebang_that_names_env_names_the_interpreter_behind_its_options() {
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -S python3\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -S python3 -u\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -Spython3\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -S \"python3 -u\"\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -S bash -e\n"),
+            Some("shell")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -S node --loader x\n"),
+            Some("javascript")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env LANG=C python3\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -u LANG python3\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env --unset=LANG python3\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -i python3\n"),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::shebang_language("#!/usr/bin/env -- python3\n"),
+            Some("python")
+        );
+    }
+
+    #[test]
+    fn a_file_of_the_window_of_python_is_a_file_of_python() {
+        assert_eq!(
+            catalog::script_language(Path::new("run.pyw")),
+            Some("python")
+        );
+        assert_eq!(
+            catalog::script_language(Path::new("run.py")),
+            Some("python")
+        );
+        assert_eq!(catalog::script_language(Path::new("run.sh")), Some("shell"));
     }
 
     #[test]
@@ -3213,5 +3571,135 @@ mod tests {
 
         let rendered = render_record(&record);
         assert!(!rendered.contains(SECRET), "{rendered}");
+    }
+
+    #[test]
+    fn the_lock_holds_the_pid_of_the_process_that_took_it() {
+        let dir = temp_dir("lock-pid");
+        let lock = Lock::acquire_within(&dir, "demo", Duration::from_secs(1)).unwrap();
+
+        let content = fs::read_to_string(&lock.path).unwrap();
+        assert_eq!(content.trim(), std::process::id().to_string());
+    }
+
+    #[test]
+    fn a_lock_of_a_process_that_is_gone_is_removed() {
+        let dir = temp_dir("lock-gone");
+        let path = dir.join("demo.lock");
+
+        // A lock of a process that is gone is stale, so it is removed and
+        // the add goes on.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        write(&path, &format!("{}\n", child.id()));
+        assert!(remove_stale_lock(&path));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_path_that_names_another_file_is_no_file() {
+        let dir = temp_dir("lock-same-file");
+        let path = dir.join("demo.lock");
+        write(&path, "1\n");
+        let file = fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+
+        // The path names the file that was opened.
+        assert!(same_file(&file, &path));
+
+        // Another file took the place of the lock, so the path names
+        // another file and the lock of the file is no lock of the path.
+        let other = dir.join("other.lock");
+        write(&other, "2\n");
+        fs::rename(&other, &path).unwrap();
+        assert!(!same_file(&file, &path));
+    }
+
+    #[test]
+    fn a_lock_that_holds_no_pid_is_no_stale_lock() {
+        let dir = temp_dir("lock-no-pid");
+        let path = dir.join("demo.lock");
+
+        // A lock that holds no pid is no lock of a known process, so it is
+        // only stale when it is old.
+        write(&path, "not a pid\n");
+        assert!(!remove_stale_lock(&path));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn a_young_lock_that_a_process_holds_is_no_stale_lock() {
+        let dir = temp_dir("lock-held");
+        let lock = Lock::acquire_within(&dir, "demo", Duration::from_secs(1)).unwrap();
+
+        // The process holds the lock of the file, so the process works on
+        // the skill and its lock is no stale lock.
+        assert!(!remove_stale_lock(&lock.path));
+        assert!(lock.path.exists());
+    }
+
+    #[test]
+    fn an_old_lock_is_stale_even_when_a_process_holds_it() {
+        let dir = temp_dir("lock-old");
+        let lock = Lock::acquire_within(&dir, "demo", Duration::from_secs(1)).unwrap();
+
+        // The lock is old, so the add that took it never finished and the
+        // lock is stale, even when a process holds the lock of the file.
+        let file = fs::File::options().write(true).open(&lock.path).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(20 * 60);
+        file.set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        assert!(remove_stale_lock(&lock.path));
+        assert!(!lock.path.exists());
+    }
+
+    #[test]
+    fn the_release_of_a_lock_leaves_the_lock_of_another_process_alone() {
+        let dir = temp_dir("lock-release");
+        let lock = Lock::acquire_within(&dir, "demo", Duration::from_secs(1)).unwrap();
+        let path = lock.path.clone();
+
+        // Another add took the lock in the meantime, so the file of the
+        // path is another file than the file of the lock.
+        let other = dir.join("other.lock");
+        write(&other, "12345\n");
+        fs::rename(&other, &path).unwrap();
+
+        drop(lock);
+
+        // The lock of the other add stays, so the two adds never write the
+        // same record at the same time.
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn a_lock_of_a_process_that_is_gone_is_stale() {
+        let dir = temp_dir("lock-stale");
+        let path = dir.join("demo.lock");
+
+        // A lock of a process that is gone is stale.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        let dead = child.id().to_string();
+        write(&path, &format!("{dead}\n"));
+        assert!(stale_lock(&path, &format!("{dead}\n")));
+
+        // A lock of this process is not stale.
+        let alive = std::process::id().to_string();
+        write(&path, &format!("{alive}\n"));
+        assert!(!stale_lock(&path, &format!("{alive}\n")));
+
+        // A lock that is older than ten minutes is stale, whatever its pid
+        // holds.
+        write(&path, &format!("{alive}\n"));
+        let file = fs::File::options().write(true).open(&path).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(20 * 60);
+        file.set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        assert!(stale_lock(&path, &format!("{alive}\n")));
     }
 }
