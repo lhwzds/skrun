@@ -2395,7 +2395,7 @@ fn is_symlink_at(directory: std::os::fd::RawFd, name: &std::ffi::CStr) -> bool {
             libc::AT_SYMLINK_NOFOLLOW,
         )
     };
-    result == 0 && status.st_mode as u32 & libc::S_IFMT as u32 == libc::S_IFLNK as u32
+    result == 0 && mode_bits(status.st_mode) & mode_bits(libc::S_IFMT) == mode_bits(libc::S_IFLNK)
 }
 
 /// Open a name below a folder, without following a symlink.
@@ -2530,11 +2530,11 @@ fn collect_markdown_at(
         } else {
             format!("{prefix}/{name}")
         };
-        if kind == libc::S_IFLNK as u32 {
+        if kind == mode_bits(libc::S_IFLNK) {
             // A link is never followed and never listed.
             continue;
         }
-        if kind == libc::S_IFDIR as u32 {
+        if kind == mode_bits(libc::S_IFDIR) {
             let name = std::ffi::CString::new(name).map_err(|_| {
                 anyhow::anyhow!(
                     "the file `{}` must be a path inside the stored version",
@@ -2560,7 +2560,7 @@ fn collect_markdown_at(
                     ));
                 }
             }
-        } else if kind == libc::S_IFREG as u32 && is_markdown(&relative) {
+        } else if kind == mode_bits(libc::S_IFREG) && is_markdown(&relative) {
             out.push(relative);
         }
     }
@@ -2632,7 +2632,7 @@ fn read_dir_at(directory: std::os::fd::RawFd) -> Result<Vec<(std::ffi::OsString,
             unsafe { libc::closedir(handle) };
             return Err(anyhow::Error::new(error).context("read the folder of the stored version"));
         }
-        let kind = status.st_mode as u32 & libc::S_IFMT as u32;
+        let kind = mode_bits(status.st_mode) & mode_bits(libc::S_IFMT);
         entries.push((std::ffi::OsString::from_vec(bytes.to_vec()), kind));
     }
     unsafe { libc::closedir(handle) };
@@ -4515,6 +4515,15 @@ fn unlock_directories(root: &Path) -> Result<()> {
         set_directory_mode(&directory, PRIVATE_DIR_MODE)?;
     }
     Ok(())
+}
+
+/// The bits of a file mode as a `u32`.
+///
+/// `mode_t` is a `u16` on macOS and a `u32` on Linux, so the cast is needed
+/// on one of them and unnecessary on the other.
+#[allow(clippy::unnecessary_cast)]
+fn mode_bits(mode: libc::mode_t) -> u32 {
+    mode as u32
 }
 
 #[cfg(test)]
