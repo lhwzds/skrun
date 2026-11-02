@@ -1258,6 +1258,9 @@ fn run_catalog_path(options: &CatalogPathCommand) -> Result<()> {
 /// The file of the stored version is the only thing the command prints. The
 /// file is read and never run, so looking at a skill is safe.
 ///
+/// Every line of the file goes through the redaction helper, so a secret
+/// that is stored in a file of a skill never reaches the output.
+///
 /// With `--require-safe` a version that is not safe to read is refused
 /// before anything is printed, so nothing of such a version reaches the
 /// output.
@@ -1274,6 +1277,8 @@ fn run_catalog_cat(options: &CatalogCatCommand) -> Result<()> {
         let files = store::list_version_markdown(&location)?;
         let mut text = String::new();
         for file in files {
+            // The name of a file goes through the redaction helper as well,
+            // so a name that holds a key never reaches the output.
             text.push_str(&catalog::redact(&file));
             text.push('\n');
         }
@@ -1285,7 +1290,10 @@ fn run_catalog_cat(options: &CatalogCatCommand) -> Result<()> {
         _ => store::SKILL_FILE.to_string(),
     };
     let text = store::read_version_file(&location, &file)?;
-    print!("{text}");
+    // Every line of the file goes through the redaction helper, so a secret
+    // of the file never reaches the output. A line that holds no secret
+    // keeps its text and its line ending.
+    print!("{}", catalog::redact_lines(&text));
     Ok(())
 }
 

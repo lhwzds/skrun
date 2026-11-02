@@ -2913,6 +2913,128 @@ pub fn redact(text: &str) -> String {
     }
 }
 
+/// Hide the secrets of a text, line by line.
+///
+/// Every line of the text goes through the redaction helper, so a value
+/// that looks like a key never reaches the output. A line that holds no
+/// secret keeps its text and its line ending, so the text of a file stays
+/// the same for every line that holds no secret.
+///
+/// A line ends with a line feed, with a carriage return, or with both of
+/// them, so a file of windows, a file of macos and a file that holds
+/// carriage returns only are read line by line as well and keep their line
+/// endings.
+///
+/// A key of a private key holds more than one line, so the lines of such a
+/// key are hidden as well: the body of the key is a secret too. The last
+/// line of a key is hidden as well, even when it ends without a line
+/// ending.
+pub fn redact_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    // The number of the keys of a private key that are open, so the lines
+    // of a key are known while they are read.
+    let mut open_keys = 0usize;
+    let mut rest = text;
+    while !rest.is_empty() {
+        // The line is read before it is written, and the state of the keys
+        // is read before the line is read, so the last line of a key is
+        // hidden as well, even when it ends without a line ending.
+        let (content, ending, behind) = split_line(rest);
+        rest = behind;
+        let starts = count_key_starts(content);
+        let ends = count_key_ends(content);
+        if open_keys > 0 {
+            // The key of a private key holds more than one line, so every
+            // line of it is hidden.
+            out.push_str(REDACTED);
+        } else {
+            out.push_str(&redact(content));
+        }
+        out.push_str(ending);
+        // The key of the line is closed and the key behind it is opened, so
+        // the text behind the line is inside of a key only when the line
+        // holds more starts than ends.
+        open_keys += starts;
+        open_keys = open_keys.saturating_sub(ends);
+    }
+    out
+}
+
+/// Split a text into the text of a line, its line ending, and the text
+/// behind it.
+///
+/// A line ends with a line feed, with a carriage return, or with both of
+/// them, so every kind of line ending is found and the line keeps it. The
+/// last line of a text has no line ending, so its line ending is empty.
+fn split_line(text: &str) -> (&str, &str, &str) {
+    let bytes = text.as_bytes();
+    for (at, byte) in bytes.iter().enumerate() {
+        match *byte {
+            b'\n' => return (&text[..at], "\n", &text[at + 1..]),
+            b'\r' => {
+                if bytes.get(at + 1) == Some(&b'\n') {
+                    return (&text[..at], "\r\n", &text[at + 2..]);
+                }
+                return (&text[..at], "\r", &text[at + 1..]);
+            }
+            _ => {}
+        }
+    }
+    (text, "", "")
+}
+
+/// The number of the starts of a key of a private key in a line.
+///
+/// Every start of a key is counted, so a line that holds the start and the
+/// end of a key at once holds a whole key.
+fn count_key_starts(line: &str) -> usize {
+    let marker = "-----BEGIN ";
+    let mut count = 0;
+    let mut search = 0;
+    while let Some(offset) = line[search..].find(marker) {
+        let at = search + offset;
+        let rest = &line[at + marker.len()..];
+        if let Some(position) = rest.find("PRIVATE KEY-----")
+            && rest[..position]
+                .chars()
+                .all(|character| character == ' ' || character.is_ascii_uppercase())
+        {
+            count += 1;
+        }
+        search = at + 1;
+    }
+    count
+}
+
+/// The number of the ends of a key of a private key in a line.
+///
+/// The line of the end of a key holds the same marker as the line of the
+/// start of a key, so the key ends there and the text behind it is no
+/// secret of the key.
+///
+/// Every end of a key is counted, so a line that holds the start and the
+/// end of a key at once holds a whole key.
+fn count_key_ends(line: &str) -> usize {
+    let marker = "-----END ";
+    let mut count = 0;
+    let mut search = 0;
+    while let Some(offset) = line[search..].find(marker) {
+        let at = search + offset;
+        let rest = &line[at + marker.len()..];
+        // Only the label of a private key ends a key, so the end of a
+        // certificate in front of the start of a key never closes it.
+        if let Some(position) = rest.find("PRIVATE KEY-----")
+            && rest[..position]
+                .chars()
+                .all(|character| character == ' ' || character.is_ascii_uppercase())
+        {
+            count += 1;
+        }
+        search = at + 1;
+    }
+    count
+}
+
 /// Whether a line holds a secret.
 ///
 /// A type of Python holds no secret, but only in a file of python: an
@@ -4006,21 +4128,7 @@ fn is_key_byte(byte: u8) -> bool {
 }
 
 fn has_private_key(line: &str) -> bool {
-    let marker = "-----BEGIN ";
-    let mut search = 0;
-    while let Some(offset) = line[search..].find(marker) {
-        let at = search + offset;
-        let rest = &line[at + marker.len()..];
-        if let Some(position) = rest.find("PRIVATE KEY-----")
-            && rest[..position]
-                .chars()
-                .all(|character| character == ' ' || character.is_ascii_uppercase())
-        {
-            return true;
-        }
-        search = at + 1;
-    }
-    false
+    count_key_starts(line) > 0
 }
 
 fn has_aws_key(line: &str) -> bool {
@@ -4734,6 +4842,14 @@ fn plural(count: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_end_of_a_certificate_never_closes_a_private_key() {
+        let line = "-----END CERTIFICATE----- -----BEGIN PRIVATE KEY-----";
+        assert_eq!(count_key_ends(line), 0);
+        assert_eq!(count_key_starts(line), 1);
+        assert_eq!(count_key_ends("-----END RSA PRIVATE KEY-----"), 1);
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Whether a line of a file of python holds a secret.
@@ -6291,6 +6407,112 @@ mod tests {
         assert_eq!(redact(SECRET), REDACTED);
         assert_eq!(redact(&format!("name: {SECRET}")), REDACTED);
         assert_eq!(redact(&format!("docs/{SECRET}.md")), REDACTED);
+    }
+
+    #[test]
+    fn redact_lines_hides_the_secrets_of_a_text() {
+        // A line that holds no secret keeps its text and its line ending.
+        assert_eq!(redact_lines("plain text\n"), "plain text\n");
+        assert_eq!(redact_lines(""), "");
+        assert_eq!(redact_lines("a\nb\n"), "a\nb\n");
+
+        // A line that holds a secret is hidden, and the other lines of the
+        // text are printed as they are.
+        assert_eq!(
+            redact_lines(&format!("a\nname: {SECRET}\nb\n")),
+            format!("a\n{REDACTED}\nb\n")
+        );
+        assert_eq!(
+            redact_lines("a\npassword: hunter2xyz\nb\n"),
+            format!("a\n{REDACTED}\nb\n")
+        );
+
+        // The last line of a text has no line ending, and it is hidden all
+        // the same.
+        assert_eq!(redact_lines(&format!("name: {SECRET}")), REDACTED);
+    }
+
+    #[test]
+    fn redact_lines_keeps_the_line_endings_of_a_text() {
+        // A line of windows keeps its carriage return and its line feed.
+        assert_eq!(redact_lines("a\r\nb\r\n"), "a\r\nb\r\n");
+        assert_eq!(redact_lines("a\r\n"), "a\r\n");
+
+        // A text that ends without a line ending keeps its text.
+        assert_eq!(redact_lines("a"), "a");
+    }
+
+    #[test]
+    fn redact_lines_hides_the_body_of_a_private_key() {
+        // The body of a key of a private key is a secret as well, so every
+        // line of the key is hidden.
+        let key = concat!(
+            "-----BEGIN RSA PRIVATE KEY-----\n",
+            "MIIEowIBAAKCAQEAx1234567890\n",
+            "-----END RSA PRIVATE KEY-----\n",
+        );
+        let redacted = redact_lines(key);
+        assert!(
+            !redacted.contains("MIIEowIBAAKCAQEAx1234567890"),
+            "{redacted}"
+        );
+        assert_eq!(redacted.matches(REDACTED).count(), 3, "{redacted}");
+
+        // The text behind the key is printed as it is.
+        assert_eq!(
+            redact_lines(&format!("{key}after\n")),
+            format!("{REDACTED}\n{REDACTED}\n{REDACTED}\nafter\n")
+        );
+    }
+
+    #[test]
+    fn redact_lines_hides_the_last_line_of_a_private_key() {
+        // The last line of a key of a private key has no line ending, and
+        // it is hidden all the same, so the material of the key never
+        // reaches the output.
+        let key = concat!(
+            "-----BEGIN RSA PRIVATE KEY-----\n",
+            "MIIEowIBAAKCAQEAx1234567890",
+        );
+        let redacted = redact_lines(key);
+        assert!(
+            !redacted.contains("MIIEowIBAAKCAQEAx1234567890"),
+            "{redacted}"
+        );
+        assert_eq!(redacted, format!("{REDACTED}\n{REDACTED}"));
+    }
+
+    #[test]
+    fn redact_lines_hides_a_private_key_that_starts_and_ends_in_one_line() {
+        // The start and the end of a key of a private key can be in one
+        // line, so the key ends in that line and the lines behind it are no
+        // secret of the key and are printed as they are.
+        let text = concat!(
+            "-----BEGIN RSA PRIVATE KEY----- ",
+            "MIIEowIBAAKCAQEAx1234567890 ",
+            "-----END RSA PRIVATE KEY-----\n",
+            "after\n",
+        );
+        let redacted = redact_lines(text);
+        assert!(
+            !redacted.contains("MIIEowIBAAKCAQEAx1234567890"),
+            "{redacted}"
+        );
+        assert_eq!(redacted, format!("{REDACTED}\nafter\n"));
+    }
+
+    #[test]
+    fn redact_lines_reads_the_lines_of_a_text_with_carriage_returns() {
+        // A text that holds carriage returns only is read line by line, so
+        // the line that holds a secret is hidden and the other lines keep
+        // their text and their line endings.
+        let text = "a\rpassword: hunter2xyz\rb\r";
+        assert_eq!(redact_lines(text), format!("a\r{REDACTED}\rb\r"));
+
+        // A text that holds carriage returns only and no line feed keeps
+        // its carriage returns as well.
+        let text = format!("a\r{}\rb", SECRET);
+        assert_eq!(redact_lines(&text), format!("a\r{REDACTED}\rb"));
     }
 
     #[test]
