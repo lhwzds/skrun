@@ -2941,8 +2941,6 @@ pub fn redact_lines(text: &str) -> String {
         // hidden as well, even when it ends without a line ending.
         let (content, ending, behind) = split_line(rest);
         rest = behind;
-        let starts = count_key_starts(content);
-        let ends = count_key_ends(content);
         if open_keys > 0 {
             // The key of a private key holds more than one line, so every
             // line of it is hidden.
@@ -2951,11 +2949,10 @@ pub fn redact_lines(text: &str) -> String {
             out.push_str(&redact(content));
         }
         out.push_str(ending);
-        // The key of the line is closed and the key behind it is opened, so
-        // the text behind the line is inside of a key only when the line
-        // holds more starts than ends.
-        open_keys += starts;
-        open_keys = open_keys.saturating_sub(ends);
+        // The markers of the line are read in their order, so an end in
+        // front of a start never cancels the start: the text behind the
+        // line is inside of a key when the last marker of the line opens one.
+        open_keys = open_keys_after(content, open_keys);
     }
     out
 }
@@ -2983,56 +2980,59 @@ fn split_line(text: &str) -> (&str, &str, &str) {
     (text, "", "")
 }
 
+/// The number of the keys of a private key that are open behind a line.
+///
+/// The starts and the ends of the line are read in the order of the line,
+/// so `-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----` leaves a key
+/// open behind the line.
+fn open_keys_after(line: &str, open: usize) -> usize {
+    let mut markers: Vec<(usize, bool)> = key_marker_positions(line, "-----BEGIN ")
+        .into_iter()
+        .map(|at| (at, true))
+        .chain(
+            key_marker_positions(line, "-----END ")
+                .into_iter()
+                .map(|at| (at, false)),
+        )
+        .collect();
+    markers.sort_unstable();
+    markers.into_iter().fold(open, |open, (_, start)| {
+        if start {
+            open + 1
+        } else {
+            open.saturating_sub(1)
+        }
+    })
+}
+
+/// The places in a line of the markers of a private key behind a prefix.
+///
+/// Only the label of a private key counts, so the marker of a certificate
+/// is never a marker of a key.
+fn key_marker_positions(line: &str, marker: &str) -> Vec<usize> {
+    let mut positions = Vec::new();
+    let mut search = 0;
+    while let Some(offset) = line[search..].find(marker) {
+        let at = search + offset;
+        let rest = &line[at + marker.len()..];
+        if let Some(position) = rest.find("PRIVATE KEY-----")
+            && rest[..position]
+                .chars()
+                .all(|character| character == ' ' || character.is_ascii_uppercase())
+        {
+            positions.push(at);
+        }
+        search = at + 1;
+    }
+    positions
+}
+
 /// The number of the starts of a key of a private key in a line.
 ///
 /// Every start of a key is counted, so a line that holds the start and the
 /// end of a key at once holds a whole key.
 fn count_key_starts(line: &str) -> usize {
-    let marker = "-----BEGIN ";
-    let mut count = 0;
-    let mut search = 0;
-    while let Some(offset) = line[search..].find(marker) {
-        let at = search + offset;
-        let rest = &line[at + marker.len()..];
-        if let Some(position) = rest.find("PRIVATE KEY-----")
-            && rest[..position]
-                .chars()
-                .all(|character| character == ' ' || character.is_ascii_uppercase())
-        {
-            count += 1;
-        }
-        search = at + 1;
-    }
-    count
-}
-
-/// The number of the ends of a key of a private key in a line.
-///
-/// The line of the end of a key holds the same marker as the line of the
-/// start of a key, so the key ends there and the text behind it is no
-/// secret of the key.
-///
-/// Every end of a key is counted, so a line that holds the start and the
-/// end of a key at once holds a whole key.
-fn count_key_ends(line: &str) -> usize {
-    let marker = "-----END ";
-    let mut count = 0;
-    let mut search = 0;
-    while let Some(offset) = line[search..].find(marker) {
-        let at = search + offset;
-        let rest = &line[at + marker.len()..];
-        // Only the label of a private key ends a key, so the end of a
-        // certificate in front of the start of a key never closes it.
-        if let Some(position) = rest.find("PRIVATE KEY-----")
-            && rest[..position]
-                .chars()
-                .all(|character| character == ' ' || character.is_ascii_uppercase())
-        {
-            count += 1;
-        }
-        search = at + 1;
-    }
-    count
+    key_marker_positions(line, "-----BEGIN ").len()
 }
 
 /// Whether a line holds a secret.
@@ -4846,9 +4846,26 @@ mod tests {
     #[test]
     fn the_end_of_a_certificate_never_closes_a_private_key() {
         let line = "-----END CERTIFICATE----- -----BEGIN PRIVATE KEY-----";
-        assert_eq!(count_key_ends(line), 0);
+        assert_eq!(key_marker_positions(line, "-----END ").len(), 0);
         assert_eq!(count_key_starts(line), 1);
-        assert_eq!(count_key_ends("-----END RSA PRIVATE KEY-----"), 1);
+        assert_eq!(
+            key_marker_positions("-----END RSA PRIVATE KEY-----", "-----END ").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_end_in_front_of_a_start_leaves_the_key_open() {
+        let line = "-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----";
+        assert_eq!(open_keys_after(line, 0), 1);
+        let text = format!("{line}\nMIIBVQIBADANSECRETBODY\n-----END PRIVATE KEY-----\nafter\n");
+        let out = redact_lines(&text);
+        assert!(!out.contains("SECRETBODY"), "{out}");
+        assert!(out.ends_with("after\n"), "{out}");
+        assert_eq!(
+            open_keys_after("-----BEGIN PRIVATE KEY----- x -----END PRIVATE KEY-----", 0),
+            0
+        );
     }
     use std::time::{SystemTime, UNIX_EPOCH};
 
