@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "skrun"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python SDK for the skrun executable skill runtime."
 requires-python = ">=3.11"
 readme = "README.md"
@@ -31,7 +31,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lhwzds/skrun"
+Homepage = "https://skrun.ai"
 Repository = "https://github.com/lhwzds/skrun"
 Documentation = "https://github.com/lhwzds/skrun/tree/main/docs"
 
