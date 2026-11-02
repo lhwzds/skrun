@@ -17,7 +17,7 @@ python-module = ["dep:pyo3"]
 
 [dependencies]
 anyhow.workspace = true
-pyo3 = { version = "0.27", optional = true, features = ["extension-module"] }
+pyo3 = { version = "0.30", optional = true, features = ["extension-module"] }
 serde_json.workspace = true
 skrun.workspace = true
 
