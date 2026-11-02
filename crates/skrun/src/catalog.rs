@@ -2931,28 +2931,33 @@ pub fn redact(text: &str) -> String {
 /// ending.
 pub fn redact_lines(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    // The number of the keys of a private key that are open, so the lines
-    // of a key are known while they are read.
-    let mut open_keys = 0usize;
+    // The label of the open key of a private key, so the lines of a key
+    // are known while they are read.
+    let mut open_key: Option<String> = None;
     let mut rest = text;
     while !rest.is_empty() {
-        // The line is read before it is written, and the state of the keys
+        // The line is read before it is written, and the state of the key
         // is read before the line is read, so the last line of a key is
         // hidden as well, even when it ends without a line ending.
         let (content, ending, behind) = split_line(rest);
         rest = behind;
-        if open_keys > 0 {
-            // The key of a private key holds more than one line, so every
-            // line of it is hidden.
-            out.push_str(REDACTED);
-        } else {
-            out.push_str(&redact(content));
+        match &open_key {
+            Some(label) => {
+                // Every line of a key is hidden. Only a line that is the
+                // end marker of the same label closes the key, so no
+                // marker inside other text can end it early: a mistake
+                // hides too much, never too little.
+                out.push_str(REDACTED);
+                if content.trim() == format!("-----END {label}-----") {
+                    open_key = None;
+                }
+            }
+            None => {
+                out.push_str(&redact(content));
+                open_key = key_left_open(content);
+            }
         }
         out.push_str(ending);
-        // The markers of the line are read in their order, so an end in
-        // front of a start never cancels the start: the text behind the
-        // line is inside of a key when the last marker of the line opens one.
-        open_keys = open_keys_after(content, open_keys);
     }
     out
 }
@@ -2980,31 +2985,23 @@ fn split_line(text: &str) -> (&str, &str, &str) {
     (text, "", "")
 }
 
-/// The number of the keys of a private key that are open behind a line.
+/// The label of the key of a private key that a line leaves open.
 ///
-/// The starts and the ends of the line are read in the order of the line,
-/// so `-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----` leaves a key
-/// open behind the line.
-fn open_keys_after(line: &str, open: usize) -> usize {
-    let mut markers: Vec<(usize, bool)> = key_marker_positions(line, "-----BEGIN ")
-        .into_iter()
-        .map(|at| (at, true))
-        .chain(
-            key_marker_positions(line, "-----END ")
-                .into_iter()
-                .map(|at| (at, false)),
-        )
-        .collect();
-    markers.sort_unstable();
-    markers.into_iter().fold(open, |open, (_, start)| {
-        if start {
-            open + 1
-        } else {
-            open.saturating_sub(1)
-        }
-    })
+/// The last start of a key in the line opens a key, unless the same line
+/// closes it behind the start with the end marker of the same label.
+fn key_left_open(line: &str) -> Option<String> {
+    let marker = "-----BEGIN ";
+    let at = *key_marker_positions(line, marker).last()?;
+    let rest = &line[at + marker.len()..];
+    let label_end = rest.find("-----")?;
+    let label = &rest[..label_end];
+    let behind = &rest[label_end + "-----".len()..];
+    if behind.contains(&format!("-----END {label}-----")) {
+        None
+    } else {
+        Some(label.to_string())
+    }
 }
-
 /// The places in a line of the markers of a private key behind a prefix.
 ///
 /// Only the label of a private key counts, so the marker of a certificate
@@ -4857,15 +4854,19 @@ mod tests {
     #[test]
     fn an_end_in_front_of_a_start_leaves_the_key_open() {
         let line = "-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----";
-        assert_eq!(open_keys_after(line, 0), 1);
+        assert_eq!(key_left_open(line).as_deref(), Some("PRIVATE KEY"));
         let text = format!("{line}\nMIIBVQIBADANSECRETBODY\n-----END PRIVATE KEY-----\nafter\n");
         let out = redact_lines(&text);
         assert!(!out.contains("SECRETBODY"), "{out}");
         assert!(out.ends_with("after\n"), "{out}");
         assert_eq!(
-            open_keys_after("-----BEGIN PRIVATE KEY----- x -----END PRIVATE KEY-----", 0),
-            0
+            key_left_open("-----BEGIN PRIVATE KEY----- x -----END PRIVATE KEY-----"),
+            None
         );
+        let nested = "-----BEGIN OPENSSH PRIVATE KEY-----\ncomment: -----END RSA PRIVATE KEY-----\nMIIBVQIBADANSECRETBODY\n-----END OPENSSH PRIVATE KEY-----\nafter\n";
+        let out = redact_lines(nested);
+        assert!(!out.contains("SECRETBODY"), "{out}");
+        assert!(out.ends_with("after\n"), "{out}");
     }
     use std::time::{SystemTime, UNIX_EPOCH};
 
